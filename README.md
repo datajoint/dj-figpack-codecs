@@ -117,6 +117,15 @@ Lazy reference returned when fetching `<figpack@>` attributes.
 **Methods:**
 - `load()` - Download and return the `FigpackView`
 - `show(**kwargs)` - Download and display in browser
+- `serve_under(base_dir)` - Materialize a servable viewer bundle; returns its relative URL
+
+### Serving a figure in a dashboard
+
+`FigpackRef.serve_under(base_dir)` materializes a self-contained, servable viewer
+bundle (figpack's viewer + the stored `data.zarr`) under `base_dir/<id>/` and returns
+the relative URL `/<id>/index.html`. Dashboards (e.g. dash-datajoint-components'
+`PlotGrid`) serve `base_dir` over HTTP and embed the URL in an `<iframe>`; repeated
+calls are idempotent and refresh the directory mtime for TTL-based cache cleaners.
 
 ## Requirements
 
