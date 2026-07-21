@@ -117,6 +117,23 @@ class TestFigpackCodec:
         with pytest.raises(DataJointError, match="requires figpack.FigpackView"):
             codec.validate(None)
 
+    def test_validate_rejects_extension_view(self):
+        """v1 stores data-only Zarr; extension JS lives outside data.zarr and would be
+        silently dropped — so extension-based views are rejected at insert time."""
+        pytest.importorskip("figpack")
+        from datajoint.errors import DataJointError
+        from figpack.core.extension_view import ExtensionView
+        from figpack.core.figpack_extension import FigpackExtension
+
+        from dj_figpack_codecs import FigpackCodec
+
+        ext_view = ExtensionView(
+            extension=FigpackExtension(name="demo-ext", javascript_code="// noop"),
+            view_type="demo.View",
+        )
+        with pytest.raises(DataJointError, match="extension"):
+            FigpackCodec().validate(ext_view)
+
 
 class TestCodecEncodeDecode:
     """Integration tests for encode/decode cycle."""

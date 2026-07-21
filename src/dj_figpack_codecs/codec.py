@@ -111,6 +111,14 @@ class FigpackCodec(SchemaCodec):
                 f"<figpack> requires figpack.FigpackView, got {type(value).__name__}"
             )
 
+        from figpack.core.extension_view import ExtensionView
+
+        if isinstance(value, ExtensionView):
+            raise DataJointError(
+                "<figpack> stores figure data only (data.zarr) and cannot yet preserve "
+                "extension JavaScript; extension-based views are not supported."
+            )
+
     def encode(
         self,
         value: "FigpackView",
