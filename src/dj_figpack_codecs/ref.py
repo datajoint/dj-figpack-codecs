@@ -10,6 +10,11 @@ and includes methods for loading and displaying the stored view.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -144,6 +149,61 @@ class FigpackRef:
             self._cached = view_figure(str(local_path))
 
         return self._cached
+
+    def serve_under(self, base_dir) -> str:
+        """Materialize a servable viewer bundle under ``base_dir`` and return its URL.
+
+        Assembles ``base_dir/<id>/`` = figpack's viewer dist (shipped inside the
+        installed ``figpack`` package) + this ref's ``data.zarr`` (downloaded from the
+        store) + an empty extension manifest, then returns the leading-"/" relative URL
+        ``/<id>/index.html``. ``<id>`` is a stable hash of the ref's schema-addressed
+        OAS path — no I/O to compute, distinct primary keys map to distinct directories.
+
+        Idempotent: if ``index.html`` already exists the build is skipped. The build is
+        staged in a temp dir and published with ``os.replace`` so a half-written bundle
+        is never served. Every call refreshes the directory mtime so a dashboard's
+        TTL-based asset eviction (which evicts by the dir's own mtime) does not sweep an
+        in-use figure.
+
+        This is the ``MaterializableRef`` seam consumed by dash-datajoint-components'
+        ``PlotGrid`` (structural typing — no import of the dashboard package here).
+        """
+        import figpack  # the viewer dist ships inside the figpack package
+
+        base_dir = Path(base_dir)
+        fig_id = hashlib.sha1(self.path.encode("utf-8")).hexdigest()[:16]
+        dest = base_dir / fig_id
+        index = dest / "index.html"
+
+        if not index.exists():
+            base_dir.mkdir(parents=True, exist_ok=True)
+            tmp = Path(tempfile.mkdtemp(dir=str(base_dir), prefix=f".{fig_id}-"))
+            try:
+                # 1) figure data (schema-addressed zarr) from the store
+                zarr_dest = tmp / "data.zarr"
+                full_path = self._backend._full_path(self.path)
+                if self._backend.protocol == "file":
+                    shutil.copytree(full_path, zarr_dest)
+                else:
+                    self._backend.fs.get(full_path, str(zarr_dest), recursive=True)
+
+                # 2) viewer dist (index.html + assets/) from the installed figpack
+                dist = Path(figpack.__file__).parent / "figpack-figure-dist"
+                shutil.copytree(dist, tmp, dirs_exist_ok=True)
+
+                # 3) bundles always carry an extension manifest; data-only storage has
+                #    no extensions (validate() rejects ExtensionView)
+                (tmp / "extension_manifest.json").write_text('{"extensions": []}')
+
+                if dest.exists():
+                    shutil.rmtree(dest)  # stale partial build (no index.html)
+                os.replace(tmp, dest)    # publish: index.html appears only when complete
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+
+        os.utime(dest)  # dir-level touch: TTL eviction goes by the dir's own mtime
+        return f"/{fig_id}/index.html"
 
     def show(self, **kwargs) -> None:
         """
