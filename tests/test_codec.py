@@ -165,6 +165,27 @@ class TestCodecEncodeDecode:
         assert metadata["store"] == "default"
         assert ".zarr" in metadata["path"]
 
+    def test_encode_stores_data_only_zarr(
+        self, sample_figpack_view, sample_context, mock_backend, temp_store, default_store_config, mocker
+    ):
+        """encode() uploads figpack's data.zarr only — no viewer files — and the
+        consolidated zarr metadata carries the title."""
+        import json
+
+        from dj_figpack_codecs import FigpackCodec
+
+        codec = FigpackCodec()
+        mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
+
+        metadata = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
+
+        stored = temp_store / metadata["path"]
+        assert (stored / ".zmetadata").exists()          # consolidated zarr metadata
+        assert not (stored / "index.html").exists()      # no viewer in the store
+        assert not (stored / "assets").exists()
+        zmeta = json.loads((stored / ".zmetadata").read_text())
+        assert zmeta["metadata"][".zattrs"]["title"] == "Test Visualization"
+
     def test_decode_returns_figpack_ref(self, sample_metadata, mock_backend, mocker):
         """Test that decode returns FigpackRef."""
         from dj_figpack_codecs import FigpackCodec, FigpackRef

@@ -160,17 +160,18 @@ class FigpackCodec(SchemaCodec):
         title = getattr(value, "title", "") or ""
         description = getattr(value, "description", "") or ""
 
-        # Save to temporary directory, then upload
+        # Save to temporary directory, then upload the figure DATA only
         with tempfile.TemporaryDirectory() as tmpdir:
-            local_path = Path(tmpdir) / "figure.zarr"
+            bundle_path = Path(tmpdir) / "bundle"
 
-            # Use figpack's native save method
-            # This saves the view as a Zarr folder
-            value.save(str(local_path))
+            # figpack >= 0.3: save() requires keyword-only `title`. It emits a full
+            # viewer bundle (index.html + assets/ + data.zarr + extension manifest);
+            # we store ONLY data.zarr — the viewer is laid over it at render time by
+            # FigpackRef.serve_under(), so the store never duplicates viewer code.
+            value.save(str(bundle_path), title=title, description=description)
 
-            # Upload folder to storage
             backend = self._get_backend(store_name)
-            backend.put_folder(str(local_path), path)
+            backend.put_folder(str(bundle_path / "data.zarr"), path)
 
         # Return metadata
         return {
