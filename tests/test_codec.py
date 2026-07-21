@@ -121,7 +121,9 @@ class TestFigpackCodec:
 class TestCodecEncodeDecode:
     """Integration tests for encode/decode cycle."""
 
-    def test_encode_produces_metadata(self, sample_figpack_view, sample_context, mock_backend, mocker):
+    def test_encode_produces_metadata(
+        self, sample_figpack_view, sample_context, mock_backend, default_store_config, mocker
+    ):
         """Test that encode produces correct metadata structure."""
         from dj_figpack_codecs import FigpackCodec
 
