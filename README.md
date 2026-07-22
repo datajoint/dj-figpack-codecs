@@ -86,16 +86,18 @@ ref  # Shows title, description, and action hints
 
 ### Storage Structure
 
-Visualizations are stored as Zarr folders with schema-addressed paths:
+Visualizations are stored as Zarr folders under a **schema-addressed path chosen by the
+framework** (DataJoint's `build_object_path`): it mirrors the schema/table structure,
+encodes primary keys as `attr=value` segments, and ends in a tokenized filename
+(`{attribute}_{token}.zarr`), subject to the store's prefix/partitioning configuration —
+for example:
 
 ```
-{store_location}/
-└── _schema/
-    └── {schema}/
-        └── {table}/
-            └── {primary_key}/
-                └── {attribute}.zarr/
+{store_location}/demo_showcase/fluorescence_figpack/session_id=4/fig_NPhczfGY.zarr/
 ```
+
+The layout is browsable but framework-owned — do not hand-build or rely on exact paths;
+the database column's metadata (`path`, `store`) is the source of truth.
 
 ## API Reference
 

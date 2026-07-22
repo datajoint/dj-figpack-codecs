@@ -26,8 +26,9 @@ class FigpackCodec(SchemaCodec):
     """
     Schema-addressed storage for figpack visualizations as Zarr folders.
 
-    The ``<figpack@>`` codec stores FigpackView objects as Zarr folders
-    using schema-addressed paths: ``{schema}/{table}/{pk}/{attribute}.zarr``.
+    The ``<figpack@>`` codec stores FigpackView objects as Zarr folders under a
+    schema-addressed path chosen by the framework (mirrors schema/table, encodes
+    primary keys as ``attr=value``, tokenized ``{attribute}_{token}.zarr`` filename).
     Visualizations are fetched lazily via ``FigpackRef``, which provides
     metadata access (title, description) without I/O.
 
@@ -74,7 +75,7 @@ class FigpackCodec(SchemaCodec):
 
     Storage Details:
         - File format: Zarr folder (figpack native)
-        - Path: ``{schema}/{table}/{pk}/{attribute}.zarr/``
+        - Path: schema-addressed, framework-chosen (e.g. ``{schema}/{table}/{pk_attr}={val}/{attribute}_{token}.zarr/``)
         - Database column: JSON with ``{path, store, title, description}``
 
     See Also
