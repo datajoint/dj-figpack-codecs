@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -56,6 +57,89 @@ def test_serve_under_repairs_partial_build(stored_ref, tmp_path):
     assert url2 == url
     assert (dest / "index.html").exists()
     assert (dest / "data.zarr" / ".zmetadata").exists()
+
+
+def test_serve_under_publish_race_loser_treats_winner_as_success(stored_ref, tmp_path, monkeypatch):
+    """Two workers cold-rendering the same figure: the loser's os.replace hits the
+    winner's completed bundle (ENOTEMPTY) and must return success, not raise."""
+    import dj_figpack_codecs.ref as ref_mod
+
+    # Pre-build the "winner's" bundle in a separate dir.
+    winner_dir = tmp_path / "winner"
+    url = stored_ref.serve_under(winner_dir)
+    fig_id = url.split("/")[1]
+
+    serve = tmp_path / "serve"
+    real_replace = ref_mod.os.replace
+
+    def racing_replace(src, dst):
+        # Simulate the winner publishing between our existence check and publish.
+        if not (Path(dst) / "index.html").exists():
+            shutil.copytree(winner_dir / fig_id, dst)
+        return real_replace(src, dst)  # now raises ENOTEMPTY
+
+    monkeypatch.setattr(ref_mod.os, "replace", racing_replace)
+    url2 = stored_ref.serve_under(serve)
+
+    assert url2 == url
+    assert (serve / fig_id / "index.html").exists()          # winner's bundle intact
+    assert not list(serve.glob(f".{fig_id}-*"))              # loser's staging cleaned
+
+
+def test_serve_under_sweeps_orphaned_staging_dirs(stored_ref, tmp_path):
+    """Staging dirs orphaned by a killed process are swept once they age out."""
+    fig_id = hashlib.sha1(stored_ref.path.encode("utf-8")).hexdigest()[:16]
+    orphan = tmp_path / f".{fig_id}-orphan"
+    orphan.mkdir(parents=True)
+    two_hours_ago = 7200
+    import time as _time
+
+    os.utime(orphan, (_time.time() - two_hours_ago, _time.time() - two_hours_ago))
+
+    stored_ref.serve_under(tmp_path)
+    assert not orphan.exists()
+    assert (tmp_path / fig_id / "index.html").exists()
+
+
+def test_serve_under_failure_cleans_staging_and_leaves_no_partial(sample_metadata, tmp_path):
+    """A failed materialization must raise, leave no staging litter, and no partial
+    published dir — so the next call retries instead of serving garbage."""
+    from unittest.mock import MagicMock
+
+    from dj_figpack_codecs import FigpackRef
+
+    backend = MagicMock()
+    backend.protocol = "file"
+    backend._full_path.return_value = str(tmp_path / "does-not-exist")
+
+    ref = FigpackRef(sample_metadata, backend)
+    fig_id = hashlib.sha1(sample_metadata["path"].encode("utf-8")).hexdigest()[:16]
+
+    with pytest.raises(FileNotFoundError):
+        ref.serve_under(tmp_path)
+
+    assert not list(tmp_path.glob(f".{fig_id}-*"))           # staging cleaned
+    assert not (tmp_path / fig_id).exists()                  # nothing half-published
+
+
+def test_real_file_backend_roundtrip_without_db(
+    sample_figpack_view, sample_context, default_store_config, tmp_path
+):
+    """encode -> decode -> serve_under through DataJoint's REAL StorageBackend
+    (file protocol; _get_backend reads only dj.config — no DB connection needed).
+    Guards against backend API drift that MagicMock-based tests cannot see."""
+    from dj_figpack_codecs import FigpackCodec, FigpackRef
+
+    codec = FigpackCodec()  # _get_backend NOT mocked
+    metadata = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
+    ref = codec.decode(metadata)
+    assert isinstance(ref, FigpackRef)
+
+    serve = tmp_path / "serve"
+    url = ref.serve_under(serve)
+    fig_id = url.split("/")[1]
+    assert (serve / fig_id / "index.html").exists()
+    assert (serve / fig_id / "data.zarr" / ".zmetadata").exists()
 
 
 def test_serve_under_remote_backend_uses_fs_get(sample_metadata, tmp_path):

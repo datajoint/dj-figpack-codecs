@@ -134,6 +134,38 @@ class TestFigpackCodec:
         with pytest.raises(DataJointError, match="extension"):
             FigpackCodec().validate(ext_view)
 
+    def test_validate_accepts_plain_core_view(self):
+        """Core (non-extension) views validate — the reference figure type included."""
+        pytest.importorskip("figpack")
+        import numpy as np
+        from figpack.views import MultiChannelTimeseries
+
+        from dj_figpack_codecs import FigpackCodec
+
+        view = MultiChannelTimeseries(
+            start_time_sec=0.0,
+            sampling_frequency_hz=10.0,
+            data=np.zeros((20, 2), dtype=np.float32),
+        )
+        FigpackCodec().validate(view)  # no raise
+
+    def test_validate_rejects_plotly_figure_extension_view(self):
+        """Canary: figpack's PlotlyFigure IS an ExtensionView (its JS lives outside
+        data.zarr), so data-only storage must reject it. If figpack ever rebases
+        PlotlyFigure onto a core view, this test flags the policy for re-evaluation."""
+        pytest.importorskip("figpack")
+        plotly = pytest.importorskip("plotly")
+        import plotly.graph_objects as go
+        from datajoint.errors import DataJointError
+
+        from dj_figpack_codecs import FigpackCodec
+
+        from figpack.views import PlotlyFigure
+
+        fig = PlotlyFigure(fig=go.Figure(data=[go.Scatter(x=[1, 2], y=[3, 4])]))
+        with pytest.raises(DataJointError, match="extension"):
+            FigpackCodec().validate(fig)
+
 
 class TestCodecEncodeDecode:
     """Integration tests for encode/decode cycle."""
@@ -185,6 +217,30 @@ class TestCodecEncodeDecode:
         assert not (stored / "assets").exists()
         zmeta = json.loads((stored / ".zmetadata").read_text())
         assert zmeta["metadata"][".zattrs"]["title"] == "Test Visualization"
+        assert zmeta["metadata"][".zattrs"]["description"] == "A test plot"
+
+    def test_encode_titleless_view_stores_empty_title(
+        self, sample_context, mock_backend, default_store_config, mocker
+    ):
+        """Views without a title attribute (e.g. MultiChannelTimeseries) must encode:
+        figpack's save() requires the title kwarg but accepts an empty string."""
+        pytest.importorskip("figpack")
+        import numpy as np
+        from figpack.views import MultiChannelTimeseries
+
+        from dj_figpack_codecs import FigpackCodec
+
+        view = MultiChannelTimeseries(
+            start_time_sec=0.0,
+            sampling_frequency_hz=10.0,
+            data=np.zeros((20, 2), dtype=np.float32),
+        )
+        codec = FigpackCodec()
+        mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
+
+        metadata = codec.encode(view, key=sample_context, store_name="default")
+        assert metadata["title"] == ""
+        assert metadata["description"] == ""
 
     def test_decode_returns_figpack_ref(self, sample_metadata, mock_backend, mocker):
         """Test that decode returns FigpackRef."""

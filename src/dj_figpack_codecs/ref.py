@@ -14,6 +14,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -159,11 +160,13 @@ class FigpackRef:
         ``/<id>/index.html``. ``<id>`` is a stable hash of the ref's schema-addressed
         OAS path — no I/O to compute, distinct primary keys map to distinct directories.
 
-        Idempotent: if ``index.html`` already exists the build is skipped. The build is
-        staged in a temp dir and published with ``os.replace`` so a half-written bundle
-        is never served. Every call refreshes the directory mtime so a dashboard's
-        TTL-based asset eviction (which evicts by the dir's own mtime) does not sweep an
-        in-use figure.
+        Idempotent and concurrency-tolerant: if ``index.html`` already exists the build
+        is skipped. The build is staged in a temp dir and published with ``os.replace``
+        so a half-written bundle is never served; when two workers race to materialize
+        the same figure, the loser detects the winner's completed bundle and treats it
+        as success (the bundles are byte-equivalent). Every call refreshes the directory
+        mtime so a dashboard's TTL-based asset eviction (which evicts by the dir's own
+        mtime) does not sweep an in-use figure.
 
         This is the ``MaterializableRef`` seam consumed by dash-datajoint-components'
         ``PlotGrid`` (structural typing — no import of the dashboard package here).
@@ -177,6 +180,17 @@ class FigpackRef:
 
         if not index.exists():
             base_dir.mkdir(parents=True, exist_ok=True)
+
+            # Best-effort sweep of staging dirs orphaned by a killed process (SIGKILL/
+            # OOM between mkdtemp and publish) — they are dot-prefixed, so TTL sweepers
+            # keyed on published dirs never evict them.
+            for stale in base_dir.glob(f".{fig_id}-*"):
+                try:
+                    if time.time() - stale.stat().st_mtime > 3600:
+                        shutil.rmtree(stale, ignore_errors=True)
+                except OSError:
+                    pass
+
             tmp = Path(tempfile.mkdtemp(dir=str(base_dir), prefix=f".{fig_id}-"))
             try:
                 # 1) figure data (schema-addressed zarr) from the store
@@ -195,14 +209,26 @@ class FigpackRef:
                 #    no extensions (validate() rejects ExtensionView)
                 (tmp / "extension_manifest.json").write_text('{"extensions": []}')
 
-                if dest.exists():
-                    shutil.rmtree(dest)  # stale partial build (no index.html)
-                os.replace(tmp, dest)    # publish: index.html appears only when complete
+                try:
+                    if dest.exists() and not index.exists():
+                        shutil.rmtree(dest)  # stale partial build (no index.html)
+                    os.replace(tmp, dest)    # publish: index.html appears only complete
+                except OSError:
+                    if index.exists():
+                        # A concurrent worker published the same figure first (e.g.
+                        # os.replace ENOTEMPTY). Its bundle is byte-equivalent — treat
+                        # as success and discard our staging copy.
+                        shutil.rmtree(tmp, ignore_errors=True)
+                    else:
+                        raise
             except Exception:
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise
 
-        os.utime(dest)  # dir-level touch: TTL eviction goes by the dir's own mtime
+        try:
+            os.utime(dest)  # dir-level touch: TTL eviction goes by the dir's own mtime
+        except FileNotFoundError:
+            pass  # concurrent rebuild swapped the dir this instant; next call repairs
         return f"/{fig_id}/index.html"
 
     def show(self, **kwargs) -> None:
