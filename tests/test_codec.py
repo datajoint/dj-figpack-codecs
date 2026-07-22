@@ -108,13 +108,13 @@ class TestFigpackCodec:
 
         codec = FigpackCodec()
 
-        with pytest.raises(DataJointError, match="requires figpack.FigpackView"):
+        with pytest.raises(TypeError, match="requires figpack.FigpackView"):
             codec.validate("not a view")
 
-        with pytest.raises(DataJointError, match="requires figpack.FigpackView"):
+        with pytest.raises(TypeError, match="requires figpack.FigpackView"):
             codec.validate({"dict": "value"})
 
-        with pytest.raises(DataJointError, match="requires figpack.FigpackView"):
+        with pytest.raises(TypeError, match="requires figpack.FigpackView"):
             codec.validate(None)
 
     def test_validate_rejects_extension_view(self):
@@ -131,7 +131,7 @@ class TestFigpackCodec:
             extension=FigpackExtension(name="demo-ext", javascript_code="// noop"),
             view_type="demo.View",
         )
-        with pytest.raises(DataJointError, match="extension"):
+        with pytest.raises(TypeError, match="extension"):
             FigpackCodec().validate(ext_view)
 
     def test_validate_accepts_plain_core_view(self):
@@ -163,7 +163,7 @@ class TestFigpackCodec:
         from figpack.views import PlotlyFigure
 
         fig = PlotlyFigure(fig=go.Figure(data=[go.Scatter(x=[1, 2], y=[3, 4])]))
-        with pytest.raises(DataJointError, match="extension"):
+        with pytest.raises(TypeError, match="extension"):
             FigpackCodec().validate(fig)
 
 

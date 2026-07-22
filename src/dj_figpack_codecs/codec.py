@@ -107,15 +107,19 @@ class FigpackCodec(SchemaCodec):
                 "<figpack> codec requires figpack package. Install with: pip install figpack"
             )
 
+        # Codec convention: TypeError for unsupported types (matches
+        # AttachCodec/FilepathCodec). The ImportError branch above stays a
+        # DataJointError — a missing package is an environment problem, not a
+        # value problem.
         if not isinstance(value, FigpackView):
-            raise DataJointError(
+            raise TypeError(
                 f"<figpack> requires figpack.FigpackView, got {type(value).__name__}"
             )
 
         from figpack.core.extension_view import ExtensionView
 
         if isinstance(value, ExtensionView):
-            raise DataJointError(
+            raise TypeError(
                 "<figpack> stores figure data only (data.zarr) and cannot yet preserve "
                 "extension JavaScript; extension-based views are not supported."
             )
