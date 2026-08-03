@@ -1,4 +1,5 @@
 """FigpackRef.serve_under(): materialize a servable viewer bundle from stored data.zarr."""
+
 import hashlib
 import os
 import re
@@ -23,13 +24,13 @@ def test_serve_under_assembles_viewer_bundle(stored_ref, tmp_path):
     url = stored_ref.serve_under(tmp_path)
 
     fig_id = hashlib.sha1(stored_ref.path.encode("utf-8")).hexdigest()[:16]
-    assert url == f"/{fig_id}/index.html"                    # leading "/", schema-addressed id
-    assert re.fullmatch(r"/[0-9a-f]{16}/index\.html", url)   # hex id — path-safe by construction
+    assert url == f"/{fig_id}/index.html"  # leading "/", schema-addressed id
+    assert re.fullmatch(r"/[0-9a-f]{16}/index\.html", url)  # hex id — path-safe by construction
 
     dest = tmp_path / fig_id
-    assert (dest / "index.html").exists()                    # viewer dist
+    assert (dest / "index.html").exists()  # viewer dist
     assert (dest / "assets").is_dir()
-    assert (dest / "data.zarr" / ".zmetadata").exists()      # figure data
+    assert (dest / "data.zarr" / ".zmetadata").exists()  # figure data
     assert (dest / "extension_manifest.json").read_text() == '{"extensions": []}'
 
 
@@ -37,20 +38,20 @@ def test_serve_under_is_idempotent_and_touches_for_ttl(stored_ref, tmp_path):
     url1 = stored_ref.serve_under(tmp_path)
     dest = tmp_path / url1.lstrip("/").split("/")[0]
 
-    os.utime(dest, (1, 1))                                   # pretend the dir aged
+    os.utime(dest, (1, 1))  # pretend the dir aged
     marker = dest / "data.zarr" / ".zmetadata"
     before = marker.stat().st_mtime
 
     url2 = stored_ref.serve_under(tmp_path)
     assert url2 == url1
-    assert marker.stat().st_mtime == before                  # no re-download
-    assert dest.stat().st_mtime > 1                          # dir mtime refreshed (clean_assets TTL)
+    assert marker.stat().st_mtime == before  # no re-download
+    assert dest.stat().st_mtime > 1  # dir mtime refreshed (clean_assets TTL)
 
 
 def test_serve_under_repairs_partial_build(stored_ref, tmp_path):
     url = stored_ref.serve_under(tmp_path)
     dest = tmp_path / url.lstrip("/").split("/")[0]
-    (dest / "index.html").unlink()                           # simulate a crashed earlier build
+    (dest / "index.html").unlink()  # simulate a crashed earlier build
     shutil.rmtree(dest / "assets")
 
     url2 = stored_ref.serve_under(tmp_path)
@@ -82,8 +83,8 @@ def test_serve_under_publish_race_loser_treats_winner_as_success(stored_ref, tmp
     url2 = stored_ref.serve_under(serve)
 
     assert url2 == url
-    assert (serve / fig_id / "index.html").exists()          # winner's bundle intact
-    assert not list(serve.glob(f".{fig_id}-*"))              # loser's staging cleaned
+    assert (serve / fig_id / "index.html").exists()  # winner's bundle intact
+    assert not list(serve.glob(f".{fig_id}-*"))  # loser's staging cleaned
 
 
 def test_serve_under_sweeps_orphaned_staging_dirs(stored_ref, tmp_path):
@@ -118,8 +119,8 @@ def test_serve_under_failure_cleans_staging_and_leaves_no_partial(sample_metadat
     with pytest.raises(FileNotFoundError):
         ref.serve_under(tmp_path)
 
-    assert not list(tmp_path.glob(f".{fig_id}-*"))           # staging cleaned
-    assert not (tmp_path / fig_id).exists()                  # nothing half-published
+    assert not list(tmp_path.glob(f".{fig_id}-*"))  # staging cleaned
+    assert not (tmp_path / fig_id).exists()  # nothing half-published
 
 
 def test_real_file_backend_roundtrip_without_db(
@@ -149,7 +150,7 @@ def test_serve_under_remote_backend_uses_fs_get(sample_metadata, tmp_path):
 
     from dj_figpack_codecs import FigpackRef
 
-    remote_zarr = tmp_path / "remote-data.zarr"              # what the fake fs.get delivers
+    remote_zarr = tmp_path / "remote-data.zarr"  # what the fake fs.get delivers
     remote_zarr.mkdir()
     (remote_zarr / ".zmetadata").write_text("{}")
 
@@ -171,4 +172,49 @@ def test_serve_under_remote_backend_uses_fs_get(sample_metadata, tmp_path):
     fig_id = hashlib.sha1(sample_metadata["path"].encode("utf-8")).hexdigest()[:16]
     assert url == f"/{fig_id}/index.html"
     assert (serve / fig_id / "data.zarr" / ".zmetadata").exists()
+
+
+def test_serve_under_rejects_nested_download_layout(sample_metadata, tmp_path):
+    """fsspec's recursive get is destination-sensitive: if a backend/version ever
+    nests the source dir INSIDE dst (data.zarr/data.zarr/...) instead of landing
+    contents AS dst, serve_under must fail loud — never publish a bundle that
+    serves a broken figure."""
+    from unittest.mock import MagicMock
+
+    from datajoint.errors import DataJointError
+
+    from dj_figpack_codecs import FigpackRef
+
+    remote_zarr = tmp_path / "remote-data.zarr"
+    remote_zarr.mkdir()
+    (remote_zarr / ".zmetadata").write_text("{}")
+
+    backend = MagicMock()
+    backend.protocol = "s3"
+    backend._full_path.return_value = "bucket/loc/" + sample_metadata["path"]
+
+    def nesting_get(src, dst, recursive=False):
+        # the wrong layout: source dir nested inside dst
+        shutil.copytree(remote_zarr, Path(dst) / "data.zarr")
+
+    backend.fs.get.side_effect = nesting_get
+
+    ref = FigpackRef(sample_metadata, backend)
+    serve = tmp_path / "serve"
+
+    with pytest.raises(DataJointError, match="unexpected layout"):
+        ref.serve_under(serve)
+
+    fig_id = hashlib.sha1(sample_metadata["path"].encode("utf-8")).hexdigest()[:16]
+    assert not list(serve.glob(f".{fig_id}-*"))  # staging cleaned
+    assert not (serve / fig_id).exists()  # nothing half-published
+
+    # Recovery: the failed attempt must not wedge the destination — once the
+    # backend delivers the correct layout, the same ref publishes normally.
+    def correct_get(src, dst, recursive=False):
+        shutil.copytree(remote_zarr, dst)
+
+    backend.fs.get.side_effect = correct_get
+    url = ref.serve_under(serve)
+    assert url == f"/{fig_id}/index.html"
     assert (serve / fig_id / "index.html").exists()

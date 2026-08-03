@@ -30,19 +30,11 @@ def mock_backend(temp_store):
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(local_path, dest)
 
-    def get_folder(remote_path, local_path):
-        """Copy folder from temp store."""
-        import shutil
-
-        src = temp_store / remote_path
-        shutil.copytree(src, local_path)
-
     def _full_path(path):
         """Return full path in temp store."""
         return str(temp_store / path)
 
     backend.put_folder = put_folder
-    backend.get_folder = get_folder
     backend._full_path = _full_path
 
     return backend

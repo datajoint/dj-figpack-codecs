@@ -59,6 +59,20 @@ class TestFigpackRef:
         assert ref.description == ""
         assert ref.store is None
 
+    def test_load_and_show_raise_legibly(self, sample_metadata, mock_backend):
+        """load()/show() are not yet implementable (figpack has no view-from-zarr
+        API; DJ 2.3 has no StorageBackend.get_folder) — they must fail with a
+        clear error pointing at serve_under, not an AttributeError. Issue #3."""
+        from dj_figpack_codecs import FigpackRef
+
+        ref = FigpackRef(sample_metadata, mock_backend)
+
+        with pytest.raises(NotImplementedError, match="serve_under"):
+            ref.load()
+        with pytest.raises(NotImplementedError, match="serve_under"):
+            ref.show()
+        assert not ref.is_loaded  # failed load must not poison the cache flag
+
 
 class TestFigpackCodec:
     """Tests for FigpackCodec."""
@@ -102,8 +116,6 @@ class TestFigpackCodec:
 
     def test_validate_rejects_non_figpack_view(self):
         """Test validation rejects other types."""
-        from datajoint.errors import DataJointError
-
         from dj_figpack_codecs import FigpackCodec
 
         codec = FigpackCodec()
@@ -121,7 +133,6 @@ class TestFigpackCodec:
         """v1 stores data-only Zarr; extension JS lives outside data.zarr and would be
         silently dropped — so extension-based views are rejected at insert time."""
         pytest.importorskip("figpack")
-        from datajoint.errors import DataJointError
         from figpack.core.extension_view import ExtensionView
         from figpack.core.figpack_extension import FigpackExtension
 
@@ -156,7 +167,6 @@ class TestFigpackCodec:
         pytest.importorskip("figpack")
         plotly = pytest.importorskip("plotly")
         import plotly.graph_objects as go
-        from datajoint.errors import DataJointError
 
         from dj_figpack_codecs import FigpackCodec
 
@@ -198,7 +208,13 @@ class TestCodecEncodeDecode:
         assert ".zarr" in metadata["path"]
 
     def test_encode_stores_data_only_zarr(
-        self, sample_figpack_view, sample_context, mock_backend, temp_store, default_store_config, mocker
+        self,
+        sample_figpack_view,
+        sample_context,
+        mock_backend,
+        temp_store,
+        default_store_config,
+        mocker,
     ):
         """encode() uploads figpack's data.zarr only — no viewer files — and the
         consolidated zarr metadata carries the title."""
@@ -212,8 +228,8 @@ class TestCodecEncodeDecode:
         metadata = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
 
         stored = temp_store / metadata["path"]
-        assert (stored / ".zmetadata").exists()          # consolidated zarr metadata
-        assert not (stored / "index.html").exists()      # no viewer in the store
+        assert (stored / ".zmetadata").exists()  # consolidated zarr metadata
+        assert not (stored / "index.html").exists()  # no viewer in the store
         assert not (stored / "assets").exists()
         zmeta = json.loads((stored / ".zmetadata").read_text())
         assert zmeta["metadata"][".zattrs"]["title"] == "Test Visualization"
