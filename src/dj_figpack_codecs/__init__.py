@@ -24,17 +24,20 @@ Usage::
         def make(self, key):
             from figpack import views as vv
 
-            fig = vv.TimeseriesGraph(title="My Plot")
+            # figpack >= 0.3: title/description are optional view attributes,
+            # not constructor kwargs — the codec reads them via getattr().
+            fig = vv.TimeseriesGraph()
+            fig.title = "My Plot"
             # ... populate figure
             self.insert1({**key, 'figure': fig})
 
     # Fetch returns FigpackRef (lazy)
     ref = Visualization.fetch1('figure')
-    print(ref.title)  # No download
-    ref.show()        # Display in browser
+    print(ref.title)                        # No download
+    url = ref.serve_under("assets/serve")   # Materialize a servable viewer bundle
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .codec import FigpackCodec
 from .ref import FigpackRef

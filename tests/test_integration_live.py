@@ -3,6 +3,7 @@
 Needs a running DataJoint 2.x-compatible MySQL and DJ_HOST/DJ_USER/DJ_PASS in the env;
 skipped otherwise.
 """
+
 import hashlib
 import os
 

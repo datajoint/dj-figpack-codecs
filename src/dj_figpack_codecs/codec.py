@@ -37,13 +37,15 @@ class FigpackCodec(SchemaCodec):
     Key Features:
         - **Native format**: Stores as Zarr folder (figpack's native format)
         - **Lazy loading**: Metadata available without download
-        - **Browser display**: ``ref.show()`` opens visualization in browser
+        - **Dashboard serving**: ``ref.serve_under(base_dir)`` materializes a
+          self-contained viewer bundle (``ref.load()``/``ref.show()`` are not yet
+          implemented — see issue #3)
         - **Jupyter integration**: Rich HTML display in notebooks
         - **Schema-addressed**: Browsable paths that mirror database structure
 
     Example::
 
-        import figpack_datajoint  # Auto-registers codec
+        import dj_figpack_codecs  # Auto-registers codec
 
         @schema
         class RasterPlot(dj.Computed):
@@ -57,7 +59,10 @@ class FigpackCodec(SchemaCodec):
                 from figpack import views as vv
 
                 spikes = (SortedUnits & key).fetch('spike_times')
-                fig = vv.TimeseriesGraph(title="Spike Raster")
+                # figpack >= 0.3: title is an optional view attribute, not a
+                # constructor kwarg — the codec reads it via getattr().
+                fig = vv.TimeseriesGraph()
+                fig.title = "Spike Raster"
                 # ... populate figure
 
                 self.insert1({**key, 'visualization': fig})
@@ -67,11 +72,8 @@ class FigpackCodec(SchemaCodec):
         ref.title       # "Spike Raster" - no download
         ref.description # "" - no download
 
-        # Display in browser
-        ref.show()
-
-        # Or load explicitly
-        view = ref.load()
+        # Materialize a servable viewer bundle (e.g. for a dashboard)
+        url = ref.serve_under("assets/serve")
 
     Storage Details:
         - File format: Zarr folder (figpack native)
@@ -97,8 +99,11 @@ class FigpackCodec(SchemaCodec):
 
         Raises
         ------
+        TypeError
+            If value is not a FigpackView instance, or is an extension-based
+            view (unsupported in data-only storage).
         DataJointError
-            If value is not a FigpackView instance.
+            If the figpack package is not installed.
         """
         try:
             from figpack import FigpackView
@@ -112,9 +117,7 @@ class FigpackCodec(SchemaCodec):
         # DataJointError — a missing package is an environment problem, not a
         # value problem.
         if not isinstance(value, FigpackView):
-            raise TypeError(
-                f"<figpack> requires figpack.FigpackView, got {type(value).__name__}"
-            )
+            raise TypeError(f"<figpack> requires figpack.FigpackView, got {type(value).__name__}")
 
         from figpack.core.extension_view import ExtensionView
 
