@@ -59,6 +59,23 @@ class TestFigpackRef:
         assert ref.description == ""
         assert ref.store is None
 
+    def test_repr_html_escapes_untrusted_metadata(self, mock_backend):
+        """title/description originate in user-controlled figure metadata — a
+        payload like <img src=x onerror=...> must render inert in a notebook."""
+        from dj_figpack_codecs import FigpackRef
+
+        ref = FigpackRef(
+            {
+                "path": "some/path.zarr",
+                "title": "<img src=x onerror=alert(1)>",
+                "description": "<script>bad</script>",
+            },
+            mock_backend,
+        )
+        out = ref._repr_html_()
+        assert "<img" not in out and "<script>" not in out
+        assert "&lt;img" in out and "&lt;script&gt;" in out
+
     def test_load_and_show_raise_legibly(self, sample_metadata, mock_backend):
         """load()/show() are not yet implementable (figpack has no view-from-zarr
         API; DJ 2.3 has no StorageBackend.get_folder) — they must fail with a

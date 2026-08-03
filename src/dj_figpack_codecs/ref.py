@@ -11,6 +11,7 @@ and includes methods for loading and displaying the stored view.
 from __future__ import annotations
 
 import hashlib
+import html
 import os
 import shutil
 import tempfile
@@ -244,8 +245,12 @@ class FigpackRef:
         Returns an informative HTML snippet showing metadata.
         Loading the full visualization requires calling show() or load().
         """
-        title_html = f"<strong>{self.title}</strong>" if self.title else "<em>Untitled</em>"
-        desc_html = (
+        # title/description originate in user-controlled figure metadata —
+        # escape before interpolating into notebook HTML.
+        title_html = (
+            f"<strong>{html.escape(self.title)}</strong>" if self.title else "<em>Untitled</em>"
+        )
+        desc_html = html.escape(
             self.description[:200] + "..." if len(self.description) > 200 else self.description
         )
         status = "loaded" if self.is_loaded else "not loaded"
