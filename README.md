@@ -86,16 +86,18 @@ ref  # Shows title, description, and action hints
 
 ### Storage Structure
 
-Visualizations are stored as Zarr folders with schema-addressed paths:
+Visualizations are stored as Zarr folders under a **schema-addressed path chosen by the
+framework** (DataJoint's `build_object_path`): it mirrors the schema/table structure,
+encodes primary keys as `attr=value` segments, and ends in a tokenized filename
+(`{attribute}_{token}.zarr`), subject to the store's prefix/partitioning configuration —
+for example:
 
 ```
-{store_location}/
-└── _schema/
-    └── {schema}/
-        └── {table}/
-            └── {primary_key}/
-                └── {attribute}.zarr/
+{store_location}/demo_showcase/fluorescence_figpack/session_id=4/fig_NPhczfGY.zarr/
 ```
+
+The layout is browsable but framework-owned — do not hand-build or rely on exact paths;
+the database column's metadata (`path`, `store`) is the source of truth.
 
 ## API Reference
 
@@ -117,6 +119,15 @@ Lazy reference returned when fetching `<figpack@>` attributes.
 **Methods:**
 - `load()` - Download and return the `FigpackView`
 - `show(**kwargs)` - Download and display in browser
+- `serve_under(base_dir)` - Materialize a servable viewer bundle; returns its relative URL
+
+### Serving a figure in a dashboard
+
+`FigpackRef.serve_under(base_dir)` materializes a self-contained, servable viewer
+bundle (figpack's viewer + the stored `data.zarr`) under `base_dir/<id>/` and returns
+the relative URL `/<id>/index.html`. Dashboards (e.g. dash-datajoint-components'
+`PlotGrid`) serve `base_dir` over HTTP and embed the URL in an `<iframe>`; repeated
+calls are idempotent and refresh the directory mtime for TTL-based cache cleaners.
 
 ## Requirements
 

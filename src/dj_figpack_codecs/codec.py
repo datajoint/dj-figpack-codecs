@@ -26,8 +26,9 @@ class FigpackCodec(SchemaCodec):
     """
     Schema-addressed storage for figpack visualizations as Zarr folders.
 
-    The ``<figpack@>`` codec stores FigpackView objects as Zarr folders
-    using schema-addressed paths: ``{schema}/{table}/{pk}/{attribute}.zarr``.
+    The ``<figpack@>`` codec stores FigpackView objects as Zarr folders under a
+    schema-addressed path chosen by the framework (mirrors schema/table, encodes
+    primary keys as ``attr=value``, tokenized ``{attribute}_{token}.zarr`` filename).
     Visualizations are fetched lazily via ``FigpackRef``, which provides
     metadata access (title, description) without I/O.
 
@@ -36,13 +37,15 @@ class FigpackCodec(SchemaCodec):
     Key Features:
         - **Native format**: Stores as Zarr folder (figpack's native format)
         - **Lazy loading**: Metadata available without download
-        - **Browser display**: ``ref.show()`` opens visualization in browser
+        - **Dashboard serving**: ``ref.serve_under(base_dir)`` materializes a
+          self-contained viewer bundle (``ref.load()``/``ref.show()`` are not yet
+          implemented — see issue #3)
         - **Jupyter integration**: Rich HTML display in notebooks
         - **Schema-addressed**: Browsable paths that mirror database structure
 
     Example::
 
-        import figpack_datajoint  # Auto-registers codec
+        import dj_figpack_codecs  # Auto-registers codec
 
         @schema
         class RasterPlot(dj.Computed):
@@ -56,7 +59,10 @@ class FigpackCodec(SchemaCodec):
                 from figpack import views as vv
 
                 spikes = (SortedUnits & key).fetch('spike_times')
-                fig = vv.TimeseriesGraph(title="Spike Raster")
+                # figpack >= 0.3: title is an optional view attribute, not a
+                # constructor kwarg — the codec reads it via getattr().
+                fig = vv.TimeseriesGraph()
+                fig.title = "Spike Raster"
                 # ... populate figure
 
                 self.insert1({**key, 'visualization': fig})
@@ -66,15 +72,12 @@ class FigpackCodec(SchemaCodec):
         ref.title       # "Spike Raster" - no download
         ref.description # "" - no download
 
-        # Display in browser
-        ref.show()
-
-        # Or load explicitly
-        view = ref.load()
+        # Materialize a servable viewer bundle (e.g. for a dashboard)
+        url = ref.serve_under("assets/serve")
 
     Storage Details:
         - File format: Zarr folder (figpack native)
-        - Path: ``{schema}/{table}/{pk}/{attribute}.zarr/``
+        - Path: schema-addressed, framework-chosen (e.g. ``{schema}/{table}/{pk_attr}={val}/{attribute}_{token}.zarr/``)
         - Database column: JSON with ``{path, store, title, description}``
 
     See Also
@@ -96,8 +99,11 @@ class FigpackCodec(SchemaCodec):
 
         Raises
         ------
+        TypeError
+            If value is not a FigpackView instance, or is an extension-based
+            view (unsupported in data-only storage).
         DataJointError
-            If value is not a FigpackView instance.
+            If the figpack package is not installed.
         """
         try:
             from figpack import FigpackView
@@ -106,9 +112,19 @@ class FigpackCodec(SchemaCodec):
                 "<figpack> codec requires figpack package. Install with: pip install figpack"
             )
 
+        # Codec convention: TypeError for unsupported types (matches
+        # AttachCodec/FilepathCodec). The ImportError branch above stays a
+        # DataJointError — a missing package is an environment problem, not a
+        # value problem.
         if not isinstance(value, FigpackView):
-            raise DataJointError(
-                f"<figpack> requires figpack.FigpackView, got {type(value).__name__}"
+            raise TypeError(f"<figpack> requires figpack.FigpackView, got {type(value).__name__}")
+
+        from figpack.core.extension_view import ExtensionView
+
+        if isinstance(value, ExtensionView):
+            raise TypeError(
+                "<figpack> stores figure data only (data.zarr) and cannot yet preserve "
+                "extension JavaScript; extension-based views are not supported."
             )
 
     def encode(
@@ -152,17 +168,18 @@ class FigpackCodec(SchemaCodec):
         title = getattr(value, "title", "") or ""
         description = getattr(value, "description", "") or ""
 
-        # Save to temporary directory, then upload
+        # Save to temporary directory, then upload the figure DATA only
         with tempfile.TemporaryDirectory() as tmpdir:
-            local_path = Path(tmpdir) / "figure.zarr"
+            bundle_path = Path(tmpdir) / "bundle"
 
-            # Use figpack's native save method
-            # This saves the view as a Zarr folder
-            value.save(str(local_path))
+            # figpack >= 0.3: save() requires keyword-only `title`. It emits a full
+            # viewer bundle (index.html + assets/ + data.zarr + extension manifest);
+            # we store ONLY data.zarr — the viewer is laid over it at render time by
+            # FigpackRef.serve_under(), so the store never duplicates viewer code.
+            value.save(str(bundle_path), title=title, description=description)
 
-            # Upload folder to storage
             backend = self._get_backend(store_name)
-            backend.put_folder(str(local_path), path)
+            backend.put_folder(str(bundle_path / "data.zarr"), path)
 
         # Return metadata
         return {

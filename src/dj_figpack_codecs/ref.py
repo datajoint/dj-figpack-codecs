@@ -10,7 +10,16 @@ and includes methods for loading and displaying the stored view.
 
 from __future__ import annotations
 
+import hashlib
+import html
+import os
+import shutil
+import tempfile
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from datajoint.errors import DataJointError
 
 if TYPE_CHECKING:
     from figpack import FigpackView
@@ -42,17 +51,16 @@ class FigpackRef:
         print(ref.title)        # "Spike Raster" - no download
         print(ref.description)  # "Unit activity..." - no download
 
-    Explicit loading::
+    Materialize a servable viewer bundle (e.g. for a dashboard)::
 
-        view = ref.load()  # Downloads and returns FigpackView
-
-    Direct display::
-
-        ref.show()  # Downloads and displays in browser
+        url = ref.serve_under("assets/serve")
 
     Jupyter integration::
 
         ref  # Displays inline in notebook
+
+    ``load()`` / ``show()`` are not yet implemented (issue #3); both raise
+    ``NotImplementedError`` pointing at ``serve_under``.
     """
 
     __slots__ = ("_meta", "_backend", "_cached")
@@ -99,70 +107,133 @@ class FigpackRef:
 
     def load(self) -> "FigpackView":
         """
-        Download and return the FigpackView.
+        Download and return the FigpackView. **Not yet implemented.**
 
-        Returns
-        -------
-        FigpackView
-            The reconstructed figpack visualization.
+        figpack does not currently expose an API that reconstructs a
+        ``FigpackView`` from a stored ``data.zarr`` tree (``figpack.view_figure``
+        is a CLI helper that launches a local HTTP server and returns ``None``),
+        and the previous remote path relied on a ``StorageBackend.get_folder``
+        method that does not exist on DataJoint 2.3. Tracked in issue #3.
 
-        Notes
-        -----
-        The view is cached after first load. Subsequent calls return
-        the cached instance.
-
-        Examples
-        --------
-        Load and manipulate::
-
-            view = ref.load()
-            # Modify view or extract data
+        Raises
+        ------
+        NotImplementedError
+            Always. Use :meth:`serve_under` to materialize a servable viewer
+            bundle for browser display.
         """
-        if self._cached is not None:
-            return self._cached
+        raise NotImplementedError(
+            "FigpackRef.load() is not yet implemented (see "
+            "https://github.com/datajoint/dj-figpack-codecs/issues/3). "
+            "Use ref.serve_under(base_dir) to materialize a servable viewer "
+            "bundle instead."
+        )
 
-        import shutil
-        import tempfile
-        from pathlib import Path
+    def serve_under(self, base_dir) -> str:
+        """Materialize a servable viewer bundle under ``base_dir`` and return its URL.
 
-        from figpack import view_figure
+        Assembles ``base_dir/<id>/`` = figpack's viewer dist (shipped inside the
+        installed ``figpack`` package) + this ref's ``data.zarr`` (downloaded from the
+        store) + an empty extension manifest, then returns the leading-"/" relative URL
+        ``/<id>/index.html``. ``<id>`` is a stable hash of the ref's schema-addressed
+        OAS path — no I/O to compute, distinct primary keys map to distinct directories.
 
-        # Download Zarr folder to temporary location
-        with tempfile.TemporaryDirectory() as tmpdir:
-            local_path = Path(tmpdir) / "figure.zarr"
+        Idempotent and concurrency-tolerant: if ``index.html`` already exists the build
+        is skipped. The build is staged in a temp dir and published with ``os.replace``
+        so a half-written bundle is never served; when two workers race to materialize
+        the same figure, the loser detects the winner's completed bundle and treats it
+        as success (the bundles are byte-equivalent). Every call refreshes the directory
+        mtime so a dashboard's TTL-based asset eviction (which evicts by the dir's own
+        mtime) does not sweep an in-use figure.
 
-            if self._backend.protocol == "file":
-                # Local filesystem - copy directly
-                remote_path = self._backend._full_path(self.path)
-                shutil.copytree(remote_path, local_path)
-            else:
-                # Remote storage - download folder
-                self._backend.get_folder(self.path, str(local_path))
+        This is the ``MaterializableRef`` seam consumed by dash-datajoint-components'
+        ``PlotGrid`` (structural typing — no import of the dashboard package here).
+        """
+        import figpack  # the viewer dist ships inside the figpack package
 
-            # Load the figpack view from Zarr folder
-            # figpack's view_figure function loads from a path
-            self._cached = view_figure(str(local_path))
+        base_dir = Path(base_dir)
+        fig_id = hashlib.sha1(self.path.encode("utf-8")).hexdigest()[:16]
+        dest = base_dir / fig_id
+        index = dest / "index.html"
 
-        return self._cached
+        if not index.exists():
+            base_dir.mkdir(parents=True, exist_ok=True)
+
+            # Best-effort sweep of staging dirs orphaned by a killed process (SIGKILL/
+            # OOM between mkdtemp and publish) — they are dot-prefixed, so TTL sweepers
+            # keyed on published dirs never evict them.
+            for stale in base_dir.glob(f".{fig_id}-*"):
+                try:
+                    if time.time() - stale.stat().st_mtime > 3600:
+                        shutil.rmtree(stale, ignore_errors=True)
+                except OSError:
+                    pass
+
+            tmp = Path(tempfile.mkdtemp(dir=str(base_dir), prefix=f".{fig_id}-"))
+            try:
+                # 1) figure data (schema-addressed zarr) from the store
+                zarr_dest = tmp / "data.zarr"
+                full_path = self._backend._full_path(self.path)
+                if self._backend.protocol == "file":
+                    shutil.copytree(full_path, zarr_dest)
+                else:
+                    self._backend.fs.get(full_path, str(zarr_dest), recursive=True)
+
+                # fsspec's recursive get lands contents *as* dst only when dst
+                # does not pre-exist (guaranteed here by the fresh mkdtemp) —
+                # fail loud if a backend/version ever nests them instead.
+                if not (zarr_dest / ".zmetadata").exists():
+                    raise DataJointError(
+                        f"figure download produced an unexpected layout under "
+                        f"{zarr_dest} (no data.zarr/.zmetadata) — fsspec "
+                        f"recursive-get semantics may have changed for protocol "
+                        f"{self._backend.protocol!r}"
+                    )
+
+                # 2) viewer dist (index.html + assets/) from the installed figpack
+                dist = Path(figpack.__file__).parent / "figpack-figure-dist"
+                shutil.copytree(dist, tmp, dirs_exist_ok=True)
+
+                # 3) bundles always carry an extension manifest; data-only storage has
+                #    no extensions (validate() rejects ExtensionView)
+                (tmp / "extension_manifest.json").write_text('{"extensions": []}')
+
+                try:
+                    if dest.exists() and not index.exists():
+                        shutil.rmtree(dest)  # stale partial build (no index.html)
+                    os.replace(tmp, dest)  # publish: index.html appears only complete
+                except OSError:
+                    if index.exists():
+                        # A concurrent worker published the same figure first (e.g.
+                        # os.replace ENOTEMPTY). Its bundle is byte-equivalent — treat
+                        # as success and discard our staging copy.
+                        shutil.rmtree(tmp, ignore_errors=True)
+                    else:
+                        raise
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+
+        try:
+            os.utime(dest)  # dir-level touch: TTL eviction goes by the dir's own mtime
+        except FileNotFoundError:
+            pass  # concurrent rebuild swapped the dir this instant; next call repairs
+        return f"/{fig_id}/index.html"
 
     def show(self, **kwargs) -> None:
         """
-        Download and display the visualization in browser.
+        Download and display the visualization in browser. **Not yet
+        implemented** — depends on :meth:`load` (tracked in issue #3).
 
         Parameters
         ----------
         **kwargs
             Additional arguments passed to FigpackView.show().
 
-        Examples
-        --------
-        Display in browser::
-
-            ref.show()
-
-        Display with custom options::
-
-            ref.show(open_in_browser=True, port=8080)
+        Raises
+        ------
+        NotImplementedError
+            Always. Use :meth:`serve_under` to materialize a servable viewer
+            bundle for browser display.
         """
         view = self.load()
         view.show(**kwargs)
@@ -174,8 +245,14 @@ class FigpackRef:
         Returns an informative HTML snippet showing metadata.
         Loading the full visualization requires calling show() or load().
         """
-        title_html = f"<strong>{self.title}</strong>" if self.title else "<em>Untitled</em>"
-        desc_html = self.description[:200] + "..." if len(self.description) > 200 else self.description
+        # title/description originate in user-controlled figure metadata —
+        # escape before interpolating into notebook HTML.
+        title_html = (
+            f"<strong>{html.escape(self.title)}</strong>" if self.title else "<em>Untitled</em>"
+        )
+        desc_html = html.escape(
+            self.description[:200] + "..." if len(self.description) > 200 else self.description
+        )
         status = "loaded" if self.is_loaded else "not loaded"
 
         return f"""
