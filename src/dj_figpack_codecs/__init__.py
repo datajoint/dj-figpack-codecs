@@ -41,5 +41,6 @@ __version__ = "0.2.0"
 
 from .codec import FigpackCodec
 from .ref import FigpackRef
+from ._version import version as __version__
 
-__all__ = ["FigpackCodec", "FigpackRef", "__version__"]
+__all__ = ["__version__", "FigpackCodec", "FigpackRef", "__version__"]
