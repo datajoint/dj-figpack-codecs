@@ -158,10 +158,21 @@ class FigpackCodec(SchemaCodec):
         # Extract context using inherited helper
         schema, table, field, primary_key = self._extract_context(key)
 
+        # The connection's own config. Both helpers below fall back to global
+        # dj.config when this is None, which in a process serving many users is
+        # someone else's store — or, on a pod with no ambient credentials, none.
+        config = (key or {}).get("_config")
+
         # Build schema-addressed storage path (folder, so no extension in path building)
         # We'll append .zarr to make it clear it's a Zarr folder
         path, token = self._build_path(
-            schema, table, field, primary_key, ext=".zarr", store_name=store_name
+            schema,
+            table,
+            field,
+            primary_key,
+            ext=".zarr",
+            store_name=store_name,
+            config=config,
         )
 
         # Extract metadata before saving
@@ -178,7 +189,7 @@ class FigpackCodec(SchemaCodec):
             # FigpackRef.serve_under(), so the store never duplicates viewer code.
             value.save(str(bundle_path), title=title, description=description)
 
-            backend = self._get_backend(store_name)
+            backend = self._get_backend(store_name, config=config)
             backend.put_folder(str(bundle_path / "data.zarr"), path)
 
         # Return metadata
@@ -198,12 +209,14 @@ class FigpackCodec(SchemaCodec):
         stored : dict
             JSON metadata from database.
         key : dict, optional
-            Primary key values (unused).
+            Context dict. Only ``_config`` is read — the connection's config,
+            which carries that user's store credentials.
 
         Returns
         -------
         FigpackRef
             Lazy reference with metadata access and display methods.
         """
-        backend = self._get_backend(stored.get("store"))
+        config = (key or {}).get("_config")
+        backend = self._get_backend(stored.get("store"), config=config)
         return FigpackRef(stored, backend)
