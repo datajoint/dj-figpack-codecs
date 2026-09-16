@@ -158,3 +158,45 @@ def test_load_is_gone():
     from dj_figpack_codecs import FigpackRef
 
     assert not hasattr(FigpackRef, "load")
+
+
+def test_show_honours_range_requests(
+    sample_figpack_view, sample_context, mock_backend, default_store_config, mocker
+):
+    """figpack packs chunks into large consolidated files and the viewer ranges into
+    them. A handler that ignores Range would make the browser pull whole files."""
+    import urllib.error
+    import urllib.request
+
+    from dj_figpack_codecs import FigpackCodec
+
+    codec = FigpackCodec()
+    mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
+    ref = codec.decode(codec.encode(sample_figpack_view, key=sample_context, store_name="default"))
+
+    url = ref.show(open_browser=False)
+
+    with urllib.request.urlopen(url, timeout=10) as r:
+        whole = r.read()
+        assert r.headers.get("Accept-Ranges") == "bytes"
+
+    req = urllib.request.Request(url, headers={"Range": "bytes=0-9"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 206
+        assert r.headers["Content-Range"] == f"bytes 0-9/{len(whole)}"
+        assert r.read() == whole[:10]
+
+    # a suffix range, which is how a reader pulls a trailing index
+    req = urllib.request.Request(url, headers={"Range": "bytes=-5"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 206
+        assert r.read() == whole[-5:]
+
+    # past the end is 416, not a silent whole-file send
+    req = urllib.request.Request(url, headers={"Range": f"bytes={len(whole) + 10}-"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        raise AssertionError("expected 416")
+    except urllib.error.HTTPError as e:
+        assert e.code == 416
+        assert e.headers["Content-Range"] == f"bytes */{len(whole)}"

@@ -11,8 +11,10 @@ and includes methods for loading and displaying the stored view.
 from __future__ import annotations
 
 import hashlib
+import http.server
 import html
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -184,11 +186,11 @@ class FigpackRef:
     def show(self, *, open_browser: bool = True) -> str:
         """Serve this figure over HTTP and return its URL.
 
-        A figpack viewer fetches its Zarr chunks with HTTP range requests, so
-        opening ``index.html`` from the filesystem does not work — the bundle has to
-        be served. The server runs on an ephemeral port in a daemon thread and lives
-        as long as the process, which suits a notebook or a script; nothing has to be
-        cleaned up.
+        A figpack viewer fetches its data with HTTP range requests, so opening
+        ``index.html`` from the filesystem does not work — the bundle has to be
+        served, by something that honours ``Range``. The server runs on an ephemeral
+        port in a daemon thread and lives as long as the process, which suits a
+        notebook or a script.
 
         Parameters
         ----------
@@ -200,16 +202,17 @@ class FigpackRef:
         str
             The figure's URL.
         """
+        import atexit
         import functools
-        import http.server
         import socketserver
         import threading
         import webbrowser
 
         served = Path(tempfile.mkdtemp(prefix="figpack-show-"))
+        atexit.register(shutil.rmtree, served, True)
         url_path = self.serve_under(served)
 
-        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(served))
+        handler = functools.partial(_RangeRequestHandler, directory=str(served))
         # 0 = ephemeral port, so concurrent shows never collide
         httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -250,3 +253,64 @@ class FigpackRef:
 
     def __str__(self) -> str:
         return repr(self)
+
+
+class _RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
+    """Static file handler that honours ``Range``.
+
+    figpack packs many small chunks into large consolidated files and the viewer
+    ranges into them, so a handler that ignores ``Range`` makes a browser pull whole
+    files — which is the difference between a few kilobytes and a gigabyte. Python's
+    stock handler has no range support, so it is added here rather than by importing
+    figpack's, which would put the dependency back.
+    """
+
+    def end_headers(self):
+        self.send_header("Accept-Ranges", "bytes")
+        super().end_headers()
+
+    def log_message(self, *args):
+        pass  # a figure viewer issues hundreds of requests; do not narrate them
+
+    def do_GET(self):  # noqa: N802 — http.server's casing
+        header = self.headers.get("Range")
+        if not header:
+            return super().do_GET()
+
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", header.strip())
+        if not match:
+            return super().do_GET()  # multipart/unsatisfiable syntax: serve whole
+
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            return super().do_GET()
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            self.send_error(404)
+            return
+
+        first, last = match.group(1), match.group(2)
+        if first == "":
+            if last == "":
+                return super().do_GET()
+            length = min(int(last), size)
+            start, end = size - length, size - 1
+        else:
+            start = int(first)
+            end = min(int(last), size - 1) if last else size - 1
+
+        if start >= size or start > end:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.end_headers()
+            return
+
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        with open(path, "rb") as f:
+            f.seek(start)
+            self.wfile.write(f.read(end - start + 1))
