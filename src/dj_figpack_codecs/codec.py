@@ -4,7 +4,7 @@
 """
 FigpackCodec for storing figpack visualizations in DataJoint OAS.
 
-This codec enables storing FigpackView objects as Zarr folders in
+This codec enables storing FigpackView objects as self-contained bundles in
 schema-addressed object storage, with lazy loading via FigpackRef.
 """
 
@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 
 class FigpackCodec(SchemaCodec):
     """
-    Schema-addressed storage for figpack visualizations as Zarr folders.
+    Schema-addressed storage for figpack visualizations as self-contained bundles.
 
-    The ``<figpack@>`` codec stores FigpackView objects as Zarr folders under a
+    The ``<figpack@>`` codec stores FigpackView objects as figpack bundles under a
     schema-addressed path chosen by the framework (mirrors schema/table, encodes
     primary keys as ``attr=value``, tokenized ``{attribute}_{token}.zarr`` filename).
     Visualizations are fetched lazily via ``FigpackRef``, which provides
@@ -76,7 +76,8 @@ class FigpackCodec(SchemaCodec):
         url = ref.serve_under("assets/serve")
 
     Storage Details:
-        - File format: Zarr folder (figpack native)
+        - File format: figpack bundle — index.html, assets/, data.zarr/ and the
+          extension manifest, exactly as ``FigpackView.save()`` emits them
         - Path: schema-addressed, framework-chosen (e.g. ``{schema}/{table}/{pk_attr}={val}/{attribute}_{token}.zarr/``)
         - Database column: JSON with ``{path, store, title, description}``
 
@@ -126,7 +127,7 @@ class FigpackCodec(SchemaCodec):
         store_name: str | None = None,
     ) -> dict:
         """
-        Save FigpackView as Zarr folder and upload to storage.
+        Save FigpackView as a bundle and upload the whole folder to storage.
 
         Parameters
         ----------

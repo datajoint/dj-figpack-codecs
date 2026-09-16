@@ -19,12 +19,9 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from datajoint.errors import DataJointError
-
-if TYPE_CHECKING:
-    from figpack import FigpackView
 
 
 class FigpackRef:
