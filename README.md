@@ -69,11 +69,8 @@ ref = (RasterPlot & key).fetch1('visualization')
 print(ref.title)        # "Spike Raster"
 print(ref.description)  # "Unit activity over time"
 
-# Display in browser
+# Serve it over HTTP and open it in a browser
 ref.show()
-
-# Or load the full FigpackView
-view = ref.load()
 ```
 
 ### Jupyter Integration
@@ -86,7 +83,11 @@ ref  # Shows title, description, and action hints
 
 ### Storage Structure
 
-Visualizations are stored as Zarr folders under a **schema-addressed path chosen by the
+A figpack figure is its bundle — viewer, data and extension manifest together — and the
+whole folder is what gets stored. That is what lets a figure be served without `figpack`
+installed, and what gives an extension view somewhere to keep its JavaScript.
+
+Bundles are stored under a **schema-addressed path chosen by the
 framework** (DataJoint's `build_object_path`): it mirrors the schema/table structure,
 encodes primary keys as `attr=value` segments, and ends in a tokenized filename
 (`{attribute}_{token}.zarr`), subject to the store's prefix/partitioning configuration —
@@ -95,6 +96,10 @@ for example:
 ```
 {store_location}/demo_showcase/fluorescence_figpack/session_id=4/fig_NPhczfGY.zarr/
 ```
+
+The stored folder holds `index.html`, `assets/`, `data.zarr/` and
+`extension_manifest.json` — exactly what `FigpackView.save()` produced. Treat it as
+opaque: a custom view may name its data folder differently or carry several.
 
 The layout is browsable but framework-owned — do not hand-build or rely on exact paths;
 the database column's metadata (`path`, `store`) is the source of truth.
@@ -114,18 +119,16 @@ Lazy reference returned when fetching `<figpack@>` attributes.
 - `description` - Visualization description (no I/O)
 - `path` - Storage path
 - `store` - Store name
-- `is_loaded` - Whether data has been cached
 
 **Methods:**
-- `load()` - Download and return the `FigpackView`
-- `show(**kwargs)` - Download and display in browser
-- `serve_under(base_dir)` - Materialize a servable viewer bundle; returns its relative URL
+- `show(open_browser=True)` - Serve the figure over HTTP; returns its URL
+- `serve_under(base_dir)` - Publish the stored bundle; returns its relative URL
 
 ### Serving a figure in a dashboard
 
-`FigpackRef.serve_under(base_dir)` materializes a self-contained, servable viewer
-bundle (figpack's viewer + the stored `data.zarr`) under `base_dir/<id>/` and returns
-the relative URL `/<id>/index.html`. Dashboards (e.g. dash-datajoint-components'
+`FigpackRef.serve_under(base_dir)` downloads the stored bundle into `base_dir/<id>/`
+and returns the relative URL `/<id>/index.html`. Nothing is assembled and `figpack`
+need not be installed in the serving process. Dashboards (e.g. dash-datajoint-components'
 `PlotGrid`) serve `base_dir` over HTTP and embed the URL in an `<iframe>`; repeated
 calls are idempotent and refresh the directory mtime for TTL-based cache cleaners.
 
