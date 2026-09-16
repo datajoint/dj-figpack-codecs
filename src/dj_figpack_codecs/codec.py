@@ -35,11 +35,11 @@ class FigpackCodec(SchemaCodec):
     Store only - requires ``@`` modifier.
 
     Key Features:
-        - **Native format**: Stores as Zarr folder (figpack's native format)
+        - **Native format**: stores figpack's own bundle — viewer, data and
+          extension manifest together, so the object is what figpack produced
         - **Lazy loading**: Metadata available without download
-        - **Dashboard serving**: ``ref.serve_under(base_dir)`` materializes a
-          self-contained viewer bundle (``ref.load()``/``ref.show()`` are not yet
-          implemented — see issue #3)
+        - **Serving**: ``ref.serve_under(base_dir)`` publishes the stored bundle and
+          ``ref.show()`` serves it over HTTP; neither needs ``figpack`` installed
         - **Jupyter integration**: Rich HTML display in notebooks
         - **Schema-addressed**: Browsable paths that mirror database structure
 
@@ -100,8 +100,7 @@ class FigpackCodec(SchemaCodec):
         Raises
         ------
         TypeError
-            If value is not a FigpackView instance, or is an extension-based
-            view (unsupported in data-only storage).
+            If value is not a FigpackView instance.
         DataJointError
             If the figpack package is not installed.
         """
@@ -118,14 +117,6 @@ class FigpackCodec(SchemaCodec):
         # value problem.
         if not isinstance(value, FigpackView):
             raise TypeError(f"<figpack> requires figpack.FigpackView, got {type(value).__name__}")
-
-        from figpack.core.extension_view import ExtensionView
-
-        if isinstance(value, ExtensionView):
-            raise TypeError(
-                "<figpack> stores figure data only (data.zarr) and cannot yet preserve "
-                "extension JavaScript; extension-based views are not supported."
-            )
 
     def encode(
         self,
@@ -184,13 +175,15 @@ class FigpackCodec(SchemaCodec):
             bundle_path = Path(tmpdir) / "bundle"
 
             # figpack >= 0.3: save() requires keyword-only `title`. It emits a full
-            # viewer bundle (index.html + assets/ + data.zarr + extension manifest);
-            # we store ONLY data.zarr — the viewer is laid over it at render time by
-            # FigpackRef.serve_under(), so the store never duplicates viewer code.
+            # viewer bundle (index.html + assets/ + data.zarr + extension manifest)
+            # and the whole folder is the object: a figpack figure is not data with a
+            # viewer laid over it at render time, it is the bundle. Storing all of it
+            # is what lets the serving container render without figpack installed, and
+            # what gives an extension view somewhere to keep its JavaScript.
             value.save(str(bundle_path), title=title, description=description)
 
             backend = self._get_backend(store_name, config=config)
-            backend.put_folder(str(bundle_path / "data.zarr"), path)
+            backend.put_folder(str(bundle_path), path)
 
         # Return metadata
         return {

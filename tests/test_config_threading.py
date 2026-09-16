@@ -108,7 +108,7 @@ def test_encode_writes_through_connection_config(
         sample_figpack_view, key={**sample_context, "_config": cfg}, store_name="general"
     )
 
-    assert (temp_store / metadata["path"] / ".zmetadata").exists()
+    assert (temp_store / metadata["path"] / "data.zarr" / ".zmetadata").exists()
 
 
 def test_encode_builds_path_from_connection_config(

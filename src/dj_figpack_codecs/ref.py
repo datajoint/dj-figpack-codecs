@@ -63,7 +63,7 @@ class FigpackRef:
     ``NotImplementedError`` pointing at ``serve_under``.
     """
 
-    __slots__ = ("_meta", "_backend", "_cached")
+    __slots__ = ("_meta", "_backend")
 
     def __init__(self, metadata: dict, backend: Any):
         """
@@ -78,7 +78,6 @@ class FigpackRef:
         """
         self._meta = metadata
         self._backend = backend
-        self._cached: FigpackView | None = None
 
     @property
     def title(self) -> str:
@@ -100,41 +99,12 @@ class FigpackRef:
         """Store name (None for default store)."""
         return self._meta.get("store")
 
-    @property
-    def is_loaded(self) -> bool:
-        """True if visualization has been downloaded and cached."""
-        return self._cached is not None
-
-    def load(self) -> "FigpackView":
-        """
-        Download and return the FigpackView. **Not yet implemented.**
-
-        figpack does not currently expose an API that reconstructs a
-        ``FigpackView`` from a stored ``data.zarr`` tree (``figpack.view_figure``
-        is a CLI helper that launches a local HTTP server and returns ``None``),
-        and the previous remote path relied on a ``StorageBackend.get_folder``
-        method that does not exist on DataJoint 2.3. Tracked in issue #3.
-
-        Raises
-        ------
-        NotImplementedError
-            Always. Use :meth:`serve_under` to materialize a servable viewer
-            bundle for browser display.
-        """
-        raise NotImplementedError(
-            "FigpackRef.load() is not yet implemented (see "
-            "https://github.com/datajoint/dj-figpack-codecs/issues/3). "
-            "Use ref.serve_under(base_dir) to materialize a servable viewer "
-            "bundle instead."
-        )
-
     def serve_under(self, base_dir) -> str:
-        """Materialize a servable viewer bundle under ``base_dir`` and return its URL.
+        """Publish the stored bundle under ``base_dir`` and return its URL.
 
-        Assembles ``base_dir/<id>/`` = figpack's viewer dist (shipped inside the
-        installed ``figpack`` package) + this ref's ``data.zarr`` (downloaded from the
-        store) + an empty extension manifest, then returns the leading-"/" relative URL
-        ``/<id>/index.html``. ``<id>`` is a stable hash of the ref's schema-addressed
+        Downloads the stored object — the whole figpack bundle, viewer included — into
+        ``base_dir/<id>/`` and returns the leading-"/" relative URL ``/<id>/index.html``.
+        Nothing is assembled and ``figpack`` need not be installed. ``<id>`` is a stable hash of the ref's schema-addressed
         OAS path — no I/O to compute, distinct primary keys map to distinct directories.
 
         Idempotent and concurrency-tolerant: if ``index.html`` already exists the build
@@ -148,8 +118,6 @@ class FigpackRef:
         This is the ``MaterializableRef`` seam consumed by dash-datajoint-components'
         ``PlotGrid`` (structural typing — no import of the dashboard package here).
         """
-        import figpack  # the viewer dist ships inside the figpack package
-
         base_dir = Path(base_dir)
         fig_id = hashlib.sha1(self.path.encode("utf-8")).hexdigest()[:16]
         dest = base_dir / fig_id
@@ -170,32 +138,26 @@ class FigpackRef:
 
             tmp = Path(tempfile.mkdtemp(dir=str(base_dir), prefix=f".{fig_id}-"))
             try:
-                # 1) figure data (schema-addressed zarr) from the store
-                zarr_dest = tmp / "data.zarr"
+                # The stored object is the whole bundle, so serving is a download.
+                # Nothing here knows figpack's internal layout: a custom view may name
+                # its Zarr folder differently or carry several, and an extension view
+                # brings JavaScript that exists only in the bundle.
                 full_path = self._backend._full_path(self.path)
                 if self._backend.protocol == "file":
-                    shutil.copytree(full_path, zarr_dest)
+                    shutil.copytree(full_path, tmp, dirs_exist_ok=True)
                 else:
-                    self._backend.fs.get(full_path, str(zarr_dest), recursive=True)
+                    self._backend.fs.get(full_path, str(tmp), recursive=True)
 
-                # fsspec's recursive get lands contents *as* dst only when dst
-                # does not pre-exist (guaranteed here by the fresh mkdtemp) —
-                # fail loud if a backend/version ever nests them instead.
-                if not (zarr_dest / ".zmetadata").exists():
+                # fsspec's recursive get lands contents *as* dst only when dst does not
+                # pre-exist; tmp does. Fail loud rather than publish a bundle with no
+                # entry point, which would serve as an unexplained 404.
+                if not (tmp / "index.html").exists():
                     raise DataJointError(
-                        f"figure download produced an unexpected layout under "
-                        f"{zarr_dest} (no data.zarr/.zmetadata) — fsspec "
-                        f"recursive-get semantics may have changed for protocol "
-                        f"{self._backend.protocol!r}"
+                        f"figure download produced an unexpected layout under {tmp} "
+                        f"(no index.html) — fsspec recursive-get semantics may have "
+                        f"changed for protocol {self._backend.protocol!r}, or the "
+                        f"stored object predates bundle storage (issue #7)"
                     )
-
-                # 2) viewer dist (index.html + assets/) from the installed figpack
-                dist = Path(figpack.__file__).parent / "figpack-figure-dist"
-                shutil.copytree(dist, tmp, dirs_exist_ok=True)
-
-                # 3) bundles always carry an extension manifest; data-only storage has
-                #    no extensions (validate() rejects ExtensionView)
-                (tmp / "extension_manifest.json").write_text('{"extensions": []}')
 
                 try:
                     if dest.exists() and not index.exists():
@@ -219,24 +181,43 @@ class FigpackRef:
             pass  # concurrent rebuild swapped the dir this instant; next call repairs
         return f"/{fig_id}/index.html"
 
-    def show(self, **kwargs) -> None:
-        """
-        Download and display the visualization in browser. **Not yet
-        implemented** — depends on :meth:`load` (tracked in issue #3).
+    def show(self, *, open_browser: bool = True) -> str:
+        """Serve this figure over HTTP and return its URL.
+
+        A figpack viewer fetches its Zarr chunks with HTTP range requests, so
+        opening ``index.html`` from the filesystem does not work — the bundle has to
+        be served. The server runs on an ephemeral port in a daemon thread and lives
+        as long as the process, which suits a notebook or a script; nothing has to be
+        cleaned up.
 
         Parameters
         ----------
-        **kwargs
-            Additional arguments passed to FigpackView.show().
+        open_browser : bool, optional
+            Open the URL in the default browser. Default True.
 
-        Raises
-        ------
-        NotImplementedError
-            Always. Use :meth:`serve_under` to materialize a servable viewer
-            bundle for browser display.
+        Returns
+        -------
+        str
+            The figure's URL.
         """
-        view = self.load()
-        view.show(**kwargs)
+        import functools
+        import http.server
+        import socketserver
+        import threading
+        import webbrowser
+
+        served = Path(tempfile.mkdtemp(prefix="figpack-show-"))
+        url_path = self.serve_under(served)
+
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(served))
+        # 0 = ephemeral port, so concurrent shows never collide
+        httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+        url = f"http://127.0.0.1:{httpd.server_address[1]}{url_path}"
+        if open_browser:
+            webbrowser.open(url)
+        return url
 
     def _repr_html_(self) -> str:
         """
@@ -253,22 +234,19 @@ class FigpackRef:
         desc_html = html.escape(
             self.description[:200] + "..." if len(self.description) > 200 else self.description
         )
-        status = "loaded" if self.is_loaded else "not loaded"
-
         return f"""
         <div style="border: 1px solid #ccc; padding: 10px; border-radius: 5px; max-width: 400px;">
             <div style="font-size: 14px; margin-bottom: 5px;">{title_html}</div>
             <div style="font-size: 12px; color: #666; margin-bottom: 8px;">{desc_html}</div>
             <div style="font-size: 11px; color: #999;">
-                FigpackRef ({status}) | <code>.show()</code> to display | <code>.load()</code> to get view
+                FigpackRef | <code>.show()</code> to display | <code>.serve_under()</code> to publish
             </div>
         </div>
         """
 
     def __repr__(self) -> str:
-        status = "loaded" if self.is_loaded else "not loaded"
         title_preview = f'"{self.title[:30]}..."' if len(self.title) > 30 else f'"{self.title}"'
-        return f"FigpackRef(title={title_preview}, {status})"
+        return f"FigpackRef(title={title_preview})"
 
     def __str__(self) -> str:
         return repr(self)
