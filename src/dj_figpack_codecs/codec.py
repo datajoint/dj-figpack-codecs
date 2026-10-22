@@ -28,7 +28,7 @@ class FigpackCodec(SchemaCodec):
 
     The ``<figpack@>`` codec stores FigpackView objects as figpack bundles under a
     schema-addressed path chosen by the framework (mirrors schema/table, encodes
-    primary keys as ``attr=value``, tokenized ``{attribute}_{token}.zarr`` filename).
+    primary keys as ``attr=value``, tokenized ``{attribute}_{token}.figpack`` folder name).
     Visualizations are fetched lazily via ``FigpackRef``, which provides
     metadata access (title, description) without I/O.
 
@@ -78,7 +78,7 @@ class FigpackCodec(SchemaCodec):
     Storage Details:
         - File format: figpack bundle — index.html, assets/, data.zarr/ and the
           extension manifest, exactly as ``FigpackView.save()`` emits them
-        - Path: schema-addressed, framework-chosen (e.g. ``{schema}/{table}/{pk_attr}={val}/{attribute}_{token}.zarr/``)
+        - Path: schema-addressed, framework-chosen (e.g. ``{schema}/{table}/{pk_attr}={val}/{attribute}_{token}.figpack/``)
         - Database column: JSON with ``{path, store, title, description}``
 
     See Also
@@ -124,6 +124,7 @@ class FigpackCodec(SchemaCodec):
         value: "FigpackView",
         *,
         key: dict | None = None,
+        context: dict | None = None,
         store_name: str | None = None,
     ) -> dict:
         """
@@ -134,8 +135,10 @@ class FigpackCodec(SchemaCodec):
         value : FigpackView
             The figpack visualization to store.
         key : dict, optional
-            Context dict with ``_schema``, ``_table``, ``_field``,
-            and primary key values for path construction.
+            Primary key values for path construction.
+        context : dict, optional
+            ``schema``, ``table``, ``field`` and ``config`` of the calling
+            connection (DataJoint >= 2.3.4).
         store_name : str, optional
             Target store. If None, uses default store.
 
@@ -147,22 +150,20 @@ class FigpackCodec(SchemaCodec):
         import tempfile
         from pathlib import Path
 
-        # Extract context using inherited helper
-        schema, table, field, primary_key = self._extract_context(key)
+        schema, table, field, primary_key = self._extract_context(key, context)
 
         # The connection's own config. Both helpers below fall back to global
         # dj.config when this is None, which in a process serving many users is
         # someone else's store — or, on a pod with no ambient credentials, none.
-        config = (key or {}).get("_config")
+        config = self._codec_config(key, context)
 
-        # Build schema-addressed storage path (folder, so no extension in path building)
-        # We'll append .zarr to make it clear it's a Zarr folder
-        path, token = self._build_path(
+        # The object is a figpack bundle folder, not a Zarr store.
+        path, _token = self._build_path(
             schema,
             table,
             field,
             primary_key,
-            ext=".zarr",
+            ext=".figpack",
             store_name=store_name,
             config=config,
         )
@@ -171,7 +172,7 @@ class FigpackCodec(SchemaCodec):
         title = getattr(value, "title", "") or ""
         description = getattr(value, "description", "") or ""
 
-        # Save to temporary directory, then upload the figure DATA only
+        # Save to a temporary directory, then upload the whole bundle
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle_path = Path(tmpdir) / "bundle"
 
@@ -194,7 +195,9 @@ class FigpackCodec(SchemaCodec):
             "description": description,
         }
 
-    def decode(self, stored: dict, *, key: dict | None = None) -> FigpackRef:
+    def decode(
+        self, stored: dict, *, key: dict | None = None, context: dict | None = None
+    ) -> FigpackRef:
         """
         Create lazy FigpackRef from stored metadata.
 
@@ -203,14 +206,16 @@ class FigpackCodec(SchemaCodec):
         stored : dict
             JSON metadata from database.
         key : dict, optional
-            Context dict. Only ``_config`` is read — the connection's config,
-            which carries that user's store credentials.
+            Primary key values (unused).
+        context : dict, optional
+            Carries ``config``, the connection's config with that user's store
+            credentials (DataJoint >= 2.3.4).
 
         Returns
         -------
         FigpackRef
             Lazy reference with metadata access and display methods.
         """
-        config = (key or {}).get("_config")
+        config = self._codec_config(key, context)
         backend = self._get_backend(stored.get("store"), config=config)
         return FigpackRef(stored, backend)

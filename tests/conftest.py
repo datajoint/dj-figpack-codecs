@@ -79,7 +79,7 @@ def default_store_config(temp_store):
 def sample_metadata():
     """Sample metadata dict as would be stored in database."""
     return {
-        "path": "_schema/test_schema/test_table/id=1/visualization.zarr",
+        "path": "_schema/test_schema/test_table/id=1/visualization.figpack",
         "store": "default",
         "title": "Test Visualization",
         "description": "A test plot",

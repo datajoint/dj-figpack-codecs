@@ -40,7 +40,7 @@ CONNECTION_S3 = {
 }
 
 STORED = {
-    "path": "prefix_from_global/s/t/id=1/visualization_abcd1234.zarr",
+    "path": "prefix_from_global/s/t/id=1/visualization_abcd1234.figpack",
     "store": "general",
     "title": "Test Visualization",
     "description": "A test plot",
@@ -133,3 +133,33 @@ def test_encode_builds_path_from_connection_config(
     )
 
     assert metadata["path"].startswith("prefix_from_connection/")
+
+
+def test_decode_reads_config_from_context(keyless_global_store):
+    """DataJoint >= 2.3.4 passes the connection's config as ``context["config"]``."""
+    ref = FigpackCodec().decode(
+        STORED, key=None, context={"config": _connection_config(CONNECTION_S3)}
+    )
+
+    assert ref._backend.spec["bucket"] == "from-connection-config"
+
+
+def test_encode_reads_context_without_deprecation(
+    keyless_global_store, sample_figpack_view, temp_store, recwarn
+):
+    """With ``context`` supplied, encode must not touch the deprecated key-dict path."""
+    cfg = _connection_config({"protocol": "file", "location": str(temp_store)})
+    context = {
+        "schema": "test_schema",
+        "table": "test_table",
+        "field": "visualization",
+        "config": cfg,
+    }
+
+    metadata = FigpackCodec().encode(
+        sample_figpack_view, key={"id": 1}, context=context, store_name="general"
+    )
+
+    assert "/test_schema/test_table/id=1/" in metadata["path"]
+    assert (temp_store / metadata["path"] / "index.html").exists()
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]

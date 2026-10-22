@@ -5,7 +5,7 @@
 Lazy reference to figpack visualizations stored in DataJoint OAS.
 
 FigpackRef provides metadata access without downloading the visualization,
-and includes methods for loading and displaying the stored view.
+and includes methods for serving and displaying the stored bundle.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class FigpackRef:
     Lazy reference to a figpack visualization stored in OAS.
 
     This class provides metadata access without I/O and methods for
-    loading and displaying the stored visualization.
+    serving and displaying the stored visualization.
 
     Attributes
     ----------
@@ -50,16 +50,17 @@ class FigpackRef:
         print(ref.title)        # "Spike Raster" - no download
         print(ref.description)  # "Unit activity..." - no download
 
-    Materialize a servable viewer bundle (e.g. for a dashboard)::
+    Publish the stored bundle (e.g. for a dashboard)::
 
         url = ref.serve_under("assets/serve")
+
+    Serve it over HTTP from a notebook or script::
+
+        url = ref.show()
 
     Jupyter integration::
 
         ref  # Displays inline in notebook
-
-    ``load()`` / ``show()`` are not yet implemented (issue #3); both raise
-    ``NotImplementedError`` pointing at ``serve_under``.
     """
 
     __slots__ = ("_meta", "_backend")
@@ -230,7 +231,7 @@ class FigpackRef:
         HTML representation for Jupyter notebooks.
 
         Returns an informative HTML snippet showing metadata.
-        Loading the full visualization requires calling show() or load().
+        Displaying the figure requires calling show() or serve_under().
         """
         # title/description originate in user-controlled figure metadata —
         # escape before interpolating into notebook HTML.

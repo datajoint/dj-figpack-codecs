@@ -19,7 +19,7 @@ class TestFigpackRef:
 
         assert ref.title == "Test Visualization"
         assert ref.description == "A test plot"
-        assert ref.path == "_schema/test_schema/test_table/id=1/visualization.zarr"
+        assert ref.path == "_schema/test_schema/test_table/id=1/visualization.figpack"
         assert ref.store == "default"
 
     def test_repr(self, sample_metadata, mock_backend):
@@ -170,7 +170,7 @@ class TestFigpackCodec:
         assert metadata["title"] == "Test Visualization"
         assert metadata["description"] == "A test plot"
         assert metadata["store"] == "default"
-        assert ".zarr" in metadata["path"]
+        assert metadata["path"].endswith(".figpack")
 
     def test_encode_stores_the_bundle_with_titled_zarr(
         self,

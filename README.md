@@ -90,11 +90,11 @@ installed, and what gives an extension view somewhere to keep its JavaScript.
 Bundles are stored under a **schema-addressed path chosen by the
 framework** (DataJoint's `build_object_path`): it mirrors the schema/table structure,
 encodes primary keys as `attr=value` segments, and ends in a tokenized filename
-(`{attribute}_{token}.zarr`), subject to the store's prefix/partitioning configuration —
+(`{attribute}_{token}.figpack`), subject to the store's prefix/partitioning configuration —
 for example:
 
 ```
-{store_location}/demo_showcase/fluorescence_figpack/session_id=4/fig_NPhczfGY.zarr/
+{store_location}/demo_showcase/fluorescence_figpack/session_id=4/fig_NPhczfGY.figpack/
 ```
 
 The stored folder holds `index.html`, `assets/`, `data.zarr/` and
