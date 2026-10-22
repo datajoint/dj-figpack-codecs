@@ -103,8 +103,8 @@ class FigpackRef:
 
         Downloads the stored object — the whole figpack bundle, viewer included — into
         ``base_dir/<id>/`` and returns the leading-"/" relative URL ``/<id>/index.html``.
-        Nothing is assembled and ``figpack`` need not be installed. ``<id>`` is a stable hash of the ref's schema-addressed
-        OAS path — no I/O to compute, distinct primary keys map to distinct directories.
+        Nothing is assembled and ``figpack`` need not be installed. ``<id>`` is a stable
+        hash of the ref's schema-addressed OAS path — no I/O to compute, distinct primary keys map to distinct directories.
 
         Idempotent and concurrency-tolerant: if ``index.html`` already exists the build
         is skipped. The build is staged in a temp dir and published with ``os.replace``
@@ -145,11 +145,12 @@ class FigpackRef:
                 if self._backend.protocol == "file":
                     shutil.copytree(full_path, tmp, dirs_exist_ok=True)
                 else:
-                    self._backend.fs.get(full_path, str(tmp), recursive=True)
+                    # The trailing "/" makes fsspec copy the folder's contents into
+                    # tmp; without it, an existing dst gets the folder nested inside.
+                    self._backend.fs.get(full_path.rstrip("/") + "/", str(tmp), recursive=True)
 
-                # fsspec's recursive get lands contents *as* dst only when dst does not
-                # pre-exist; tmp does. Fail loud rather than publish a bundle with no
-                # entry point, which would serve as an unexplained 404.
+                # Fail loud rather than publish a bundle with no entry point, which
+                # would serve as an unexplained 404.
                 if not (tmp / "index.html").exists():
                     raise DataJointError(
                         f"figure download produced an unexpected layout under {tmp} "

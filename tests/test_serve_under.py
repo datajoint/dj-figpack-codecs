@@ -144,32 +144,33 @@ def test_real_file_backend_roundtrip_without_db(
 
 
 def test_serve_under_remote_backend_uses_fs_get(sample_metadata, tmp_path):
-    """Non-file protocols download via fsspec: fs.get(full_path, local, recursive=True)
-    — StorageBackend has no get_folder (verified on datajoint 2.3.1)."""
+    """Non-file protocols download via fsspec. A real in-memory filesystem stands in
+    for S3 so the test exercises fsspec's own recursive-get semantics."""
     from unittest.mock import MagicMock
+
+    import fsspec
 
     from dj_figpack_codecs import FigpackRef
 
-    remote_bundle = tmp_path / "remote-bundle"  # what the fake fs.get delivers
+    remote_bundle = tmp_path / "remote-bundle"
     (remote_bundle / "data.zarr").mkdir(parents=True)
     (remote_bundle / "data.zarr" / ".zmetadata").write_text("{}")
     (remote_bundle / "index.html").write_text("<!-- stored viewer -->")
 
+    fs = fsspec.filesystem("memory")
+    remote_path = f"/{tmp_path.name}/bucket/loc/{sample_metadata['path']}"
+    fs.put(str(remote_bundle), remote_path, recursive=True)
+    assert fs.exists(f"{remote_path}/index.html")
+
     backend = MagicMock()
     backend.protocol = "s3"
-    backend._full_path.return_value = "bucket/loc/" + sample_metadata["path"]
-
-    def fake_get(src, dst, recursive=False):
-        assert recursive is True
-        shutil.copytree(remote_bundle, dst, dirs_exist_ok=True)
-
-    backend.fs.get.side_effect = fake_get
+    backend._full_path.return_value = remote_path
+    backend.fs = fs
 
     ref = FigpackRef(sample_metadata, backend)
     serve = tmp_path / "serve"
     url = ref.serve_under(serve)
 
-    backend.fs.get.assert_called_once()
     fig_id = hashlib.sha1(sample_metadata["path"].encode("utf-8")).hexdigest()[:16]
     assert url == f"/{fig_id}/index.html"
     assert (serve / fig_id / "data.zarr" / ".zmetadata").exists()
