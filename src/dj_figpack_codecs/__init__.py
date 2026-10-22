@@ -6,7 +6,7 @@ dj-figpack-codecs: DataJoint codec for storing figpack visualizations.
 
 This package provides a codec for storing figpack FigpackView objects
 in DataJoint's schema-addressed object storage (OAS). Visualizations
-are stored as Zarr folders and fetched lazily via FigpackRef.
+are stored as self-contained bundles and fetched lazily via FigpackRef.
 
 Usage::
 
@@ -34,7 +34,7 @@ Usage::
     # Fetch returns FigpackRef (lazy)
     ref = Visualization.fetch1('figure')
     print(ref.title)                        # No download
-    url = ref.serve_under("assets/serve")   # Materialize a servable viewer bundle
+    url = ref.serve_under("assets/serve")   # Publish the stored bundle, get its URL
 """
 
 from .codec import FigpackCodec
