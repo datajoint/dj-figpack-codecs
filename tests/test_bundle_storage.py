@@ -200,3 +200,26 @@ def test_show_honours_range_requests(
     except urllib.error.HTTPError as e:
         assert e.code == 416
         assert e.headers["Content-Range"] == f"bytes */{len(whole)}"
+
+
+def test_show_reuses_one_server_per_process(
+    sample_figpack_view, sample_context, mock_backend, default_store_config, mocker
+):
+    """Repeated show() calls share one server and one served copy per figure, so a
+    notebook does not accumulate sockets, threads and temp directories."""
+    import threading
+    import urllib.parse
+
+    from dj_figpack_codecs import FigpackCodec
+
+    codec = FigpackCodec()
+    mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
+    ref = codec.decode(codec.encode(sample_figpack_view, key=sample_context, store_name="default"))
+
+    first = ref.show(open_browser=False)
+    threads_after_first = threading.active_count()
+    second = ref.show(open_browser=False)
+
+    assert urllib.parse.urlsplit(first).port == urllib.parse.urlsplit(second).port
+    assert first == second
+    assert threading.active_count() == threads_after_first

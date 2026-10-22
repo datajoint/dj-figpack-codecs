@@ -10,6 +10,8 @@ and includes methods for serving and displaying the stored bundle.
 
 from __future__ import annotations
 
+import atexit
+import functools
 import hashlib
 import http.server
 import html
@@ -17,6 +19,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -192,9 +195,10 @@ class FigpackRef:
 
         A figpack viewer fetches its data with HTTP range requests, so opening
         ``index.html`` from the filesystem does not work — the bundle has to be
-        served, by something that honours ``Range``. The server runs on an ephemeral
-        port in a daemon thread and lives as long as the process, which suits a
-        notebook or a script.
+        served, by something that honours ``Range``. One server per process, on an
+        ephemeral port in a daemon thread, serves every figure shown; each figure is
+        published once under its own directory. It lives as long as the process,
+        which suits a notebook or a script.
 
         Parameters
         ----------
@@ -206,22 +210,10 @@ class FigpackRef:
         str
             The figure's URL.
         """
-        import atexit
-        import functools
-        import socketserver
-        import threading
         import webbrowser
 
-        served = Path(tempfile.mkdtemp(prefix="figpack-show-"))
-        atexit.register(shutil.rmtree, served, True)
-        url_path = self.serve_under(served)
-
-        handler = functools.partial(_RangeRequestHandler, directory=str(served))
-        # 0 = ephemeral port, so concurrent shows never collide
-        httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-
-        url = f"http://127.0.0.1:{httpd.server_address[1]}{url_path}"
+        served, port = _show_server()
+        url = f"http://127.0.0.1:{port}{self.serve_under(served)}"
         if open_browser:
             webbrowser.open(url)
         return url
@@ -257,6 +249,24 @@ class FigpackRef:
 
     def __str__(self) -> str:
         return repr(self)
+
+
+_show_lock = threading.Lock()
+_show_state: tuple[Path, int] | None = None
+
+
+def _show_server() -> tuple[Path, int]:
+    """Return the process-wide (served directory, port), starting the server once."""
+    global _show_state
+    with _show_lock:
+        if _show_state is None:
+            served = Path(tempfile.mkdtemp(prefix="figpack-show-"))
+            atexit.register(shutil.rmtree, served, True)
+            handler = functools.partial(_RangeRequestHandler, directory=str(served))
+            httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            _show_state = (served, httpd.server_address[1])
+        return _show_state
 
 
 class _RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
