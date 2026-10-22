@@ -152,11 +152,16 @@ class FigpackRef:
                 # Fail loud rather than publish a bundle with no entry point, which
                 # would serve as an unexplained 404.
                 if not (tmp / "index.html").exists():
+                    if (tmp / ".zmetadata").exists():
+                        raise DataJointError(
+                            f"figure {self.path!r} was stored by dj-figpack-codecs 0.2.x "
+                            f"as bare Zarr data, which cannot be served on its own; "
+                            f"re-insert the figure to store its full bundle"
+                        )
                     raise DataJointError(
                         f"figure download produced an unexpected layout under {tmp} "
                         f"(no index.html) — fsspec recursive-get semantics may have "
-                        f"changed for protocol {self._backend.protocol!r}, or the "
-                        f"stored object predates bundle storage (issue #7)"
+                        f"changed for protocol {self._backend.protocol!r}"
                     )
 
                 try:

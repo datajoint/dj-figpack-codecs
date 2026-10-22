@@ -223,3 +223,30 @@ def test_serve_under_rejects_nested_download_layout(sample_metadata, tmp_path):
     url = ref.serve_under(serve)
     assert url == f"/{fig_id}/index.html"
     assert (serve / fig_id / "index.html").exists()
+
+
+def test_serve_under_names_a_legacy_data_only_object(sample_metadata, tmp_path):
+    """An object written by 0.2.x is a bare Zarr store: ``.zmetadata`` at its root and
+    no ``index.html``. serve_under must say so and tell the user to re-insert, rather
+    than blame fsspec."""
+    from unittest.mock import MagicMock
+
+    from datajoint.errors import DataJointError
+
+    from dj_figpack_codecs import FigpackRef
+
+    legacy = tmp_path / "legacy-object"
+    legacy.mkdir()
+    (legacy / ".zmetadata").write_text("{}")
+
+    backend = MagicMock()
+    backend.protocol = "file"
+    backend._full_path.return_value = str(legacy)
+
+    serve = tmp_path / "serve"
+    with pytest.raises(DataJointError, match="re-insert"):
+        FigpackRef(sample_metadata, backend).serve_under(serve)
+
+    fig_id = hashlib.sha1(sample_metadata["path"].encode("utf-8")).hexdigest()[:16]
+    assert not list(serve.glob(f".{fig_id}-*"))
+    assert not (serve / fig_id).exists()
