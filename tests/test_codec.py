@@ -234,7 +234,7 @@ class TestCodecEncodeDecode:
         mocker,
     ):
         """encode() uploads figpack's data.zarr only — no viewer files — and the
-        consolidated zarr metadata carries the title."""
+        consolidated zarr metadata carries the title and description."""
         import json
 
         from dj_figpack_codecs import FigpackCodec
@@ -248,9 +248,12 @@ class TestCodecEncodeDecode:
         assert (stored / ".zmetadata").exists()  # consolidated zarr metadata
         assert not (stored / "index.html").exists()  # no viewer in the store
         assert not (stored / "assets").exists()
-        zmeta = json.loads((stored / ".zmetadata").read_text())
-        assert zmeta["metadata"][".zattrs"]["title"] == "Test Visualization"
-        assert zmeta["metadata"][".zattrs"]["description"] == "A test plot"
+        zattrs = json.loads((stored / ".zmetadata").read_text())["metadata"][".zattrs"]
+        # figpack 0.4 writes the figure title as "figure_title", so that it no longer
+        # overwrites the root view's own "title"; figpack 0.3 wrote it as "title".
+        # The viewer reads figure_title first, then title.
+        assert zattrs.get("figure_title", zattrs.get("title")) == "Test Visualization"
+        assert zattrs["description"] == "A test plot"
 
     def test_encode_titleless_view_stores_empty_title(
         self, sample_context, mock_backend, default_store_config, mocker
