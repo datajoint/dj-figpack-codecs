@@ -5,13 +5,16 @@
 
 One dashboard process serves many users. Each connection carries its own
 credentials on ``dj.Instance.config``, while global ``dj.config`` holds only
-whatever the image was built with. The fetch path hands the connection's config
-to every codec as ``key["_config"]``; a codec that ignores it reads the wrong
-store, and on a pod with no ambient AWS credentials it raises instead.
+whatever the image was built with. DataJoint 2.3.4 and later hand the
+connection's config to every codec as ``context["config"]``; a codec that
+ignores it reads the wrong store, and on a pod with no ambient AWS credentials
+it raises instead. The codec reads the context only from ``context``, never from
+the underscore keys DataJoint 2.3 still adds to ``key``.
 """
 
 import datajoint as dj
 import pytest
+from datajoint.errors import DataJointError
 from datajoint.settings import Config
 
 from dj_figpack_codecs import FigpackCodec
@@ -72,9 +75,20 @@ def global_store(request):
     dj.config["stores"] = original
 
 
-def test_decode_resolves_store_from_connection_config(keyless_global_store):
-    """decode must read the store off ``key["_config"]``."""
-    ref = FigpackCodec().decode(STORED, key={"_config": _connection_config(CONNECTION_S3)})
+def _insert_context(cfg):
+    return {
+        "schema": "test_schema",
+        "table": "test_table",
+        "field": "visualization",
+        "config": cfg,
+    }
+
+
+def test_decode_reads_config_from_context(keyless_global_store):
+    """decode resolves the store from ``context["config"]``."""
+    ref = FigpackCodec().decode(
+        STORED, key=None, context={"config": _connection_config(CONNECTION_S3)}
+    )
 
     assert ref._backend.spec["bucket"] == "from-connection-config"
     assert ref._backend.spec["access_key"] == CONNECTION_S3["access_key"]
@@ -85,17 +99,34 @@ def test_decode_resolves_store_from_connection_config(keyless_global_store):
     [{**KEYLESS_GLOBAL_S3, "access_key": "AKIAGLOBALGLOBAL1234", "secret_key": "g" * 40}],
     indirect=True,
 )
-def test_decode_without_config_still_uses_global(global_store):
-    """No ``_config`` — an ambient caller such as a worker — keeps the global store."""
-    ref = FigpackCodec().decode(STORED, key=None)
+def test_decode_needs_context(global_store):
+    """Without ``context``, decode refuses rather than fall back to global ``dj.config``
+    or to the ``_config`` that DataJoint 2.3 adds to ``key``."""
+    with pytest.raises(DataJointError, match=r"missing: config"):
+        FigpackCodec().decode(STORED, key={"_config": _connection_config(CONNECTION_S3)})
 
-    assert ref._backend.spec["bucket"] == "from-global-config"
+
+@pytest.mark.parametrize(
+    "context",
+    [None, {"schema": "s", "table": "t", "field": "f"}],
+    ids=["no context", "no config"],
+)
+def test_encode_needs_context(keyless_global_store, sample_figpack_view, temp_store, context):
+    """encode refuses a missing context, even when ``key`` carries the legacy
+    underscore keys."""
+    cfg = _connection_config({"protocol": "file", "location": str(temp_store)})
+    legacy_key = {"id": 1, "_schema": "s", "_table": "t", "_field": "f", "_config": cfg}
+
+    with pytest.raises(DataJointError, match=r"DataJoint 2\.3\.4"):
+        FigpackCodec().encode(
+            sample_figpack_view, key=legacy_key, context=context, store_name="general"
+        )
 
 
 def test_encode_writes_through_connection_config(
-    keyless_global_store, sample_figpack_view, sample_context, temp_store
+    keyless_global_store, sample_figpack_view, temp_store
 ):
-    """encode must resolve its backend from ``_config``, not the global store."""
+    """encode resolves its backend from ``context["config"]``, not the global store."""
     cfg = _connection_config(
         {
             "protocol": "file",
@@ -105,14 +136,14 @@ def test_encode_writes_through_connection_config(
     )
 
     metadata = FigpackCodec().encode(
-        sample_figpack_view, key={**sample_context, "_config": cfg}, store_name="general"
+        sample_figpack_view, key={"id": 1}, context=_insert_context(cfg), store_name="general"
     )
 
     assert (temp_store / metadata["path"] / "data.zarr" / ".zmetadata").exists()
 
 
 def test_encode_builds_path_from_connection_config(
-    keyless_global_store, sample_figpack_view, sample_context, temp_store, mock_backend, mocker
+    keyless_global_store, sample_figpack_view, temp_store, mock_backend, mocker
 ):
     """``_build_path`` reads ``schema_prefix`` off the store spec, so resolving it
     against the global config writes under the wrong prefix — silently, since the
@@ -129,37 +160,26 @@ def test_encode_builds_path_from_connection_config(
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
 
     metadata = codec.encode(
-        sample_figpack_view, key={**sample_context, "_config": cfg}, store_name="general"
+        sample_figpack_view, key={"id": 1}, context=_insert_context(cfg), store_name="general"
     )
 
     assert metadata["path"].startswith("prefix_from_connection/")
 
 
-def test_decode_reads_config_from_context(keyless_global_store):
-    """DataJoint >= 2.3.4 passes the connection's config as ``context["config"]``."""
-    ref = FigpackCodec().decode(
-        STORED, key=None, context={"config": _connection_config(CONNECTION_S3)}
-    )
-
-    assert ref._backend.spec["bucket"] == "from-connection-config"
-
-
 def test_encode_reads_context_without_deprecation(
     keyless_global_store, sample_figpack_view, temp_store, recwarn
 ):
-    """With ``context`` supplied, encode must not touch the deprecated key-dict path."""
+    """encode builds the path from ``context`` and the primary key in ``key``, and
+    never touches the deprecated key-dict path, even when ``key`` carries the
+    underscore keys DataJoint 2.3 adds."""
     cfg = _connection_config({"protocol": "file", "location": str(temp_store)})
-    context = {
-        "schema": "test_schema",
-        "table": "test_table",
-        "field": "visualization",
-        "config": cfg,
-    }
+    key = {"id": 1, "_schema": "wrong", "_table": "wrong", "_field": "wrong", "_config": None}
 
     metadata = FigpackCodec().encode(
-        sample_figpack_view, key={"id": 1}, context=context, store_name="general"
+        sample_figpack_view, key=key, context=_insert_context(cfg), store_name="general"
     )
 
     assert "/test_schema/test_table/id=1/" in metadata["path"]
+    assert "wrong" not in metadata["path"]
     assert (temp_store / metadata["path"] / "index.html").exists()
     assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
