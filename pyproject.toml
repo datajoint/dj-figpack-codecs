@@ -27,7 +27,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "datajoint>=2.0",
+    "datajoint>=2.3.4",
     "figpack>=0.3",
 ]
 

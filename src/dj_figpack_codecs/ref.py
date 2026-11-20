@@ -5,24 +5,26 @@
 Lazy reference to figpack visualizations stored in DataJoint OAS.
 
 FigpackRef provides metadata access without downloading the visualization,
-and includes methods for loading and displaying the stored view.
+and includes methods for serving and displaying the stored bundle.
 """
 
 from __future__ import annotations
 
+import atexit
+import functools
 import hashlib
+import http.server
 import html
 import os
+import re
 import shutil
 import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from datajoint.errors import DataJointError
-
-if TYPE_CHECKING:
-    from figpack import FigpackView
 
 
 class FigpackRef:
@@ -30,7 +32,7 @@ class FigpackRef:
     Lazy reference to a figpack visualization stored in OAS.
 
     This class provides metadata access without I/O and methods for
-    loading and displaying the stored visualization.
+    serving and displaying the stored visualization.
 
     Attributes
     ----------
@@ -51,19 +53,20 @@ class FigpackRef:
         print(ref.title)        # "Spike Raster" - no download
         print(ref.description)  # "Unit activity..." - no download
 
-    Materialize a servable viewer bundle (e.g. for a dashboard)::
+    Publish the stored bundle (e.g. for a dashboard)::
 
         url = ref.serve_under("assets/serve")
+
+    Serve it over HTTP from a notebook or script::
+
+        url = ref.show()
 
     Jupyter integration::
 
         ref  # Displays inline in notebook
-
-    ``load()`` / ``show()`` are not yet implemented (issue #3); both raise
-    ``NotImplementedError`` pointing at ``serve_under``.
     """
 
-    __slots__ = ("_meta", "_backend", "_cached")
+    __slots__ = ("_meta", "_backend")
 
     def __init__(self, metadata: dict, backend: Any):
         """
@@ -78,7 +81,6 @@ class FigpackRef:
         """
         self._meta = metadata
         self._backend = backend
-        self._cached: FigpackView | None = None
 
     @property
     def title(self) -> str:
@@ -100,42 +102,13 @@ class FigpackRef:
         """Store name (None for default store)."""
         return self._meta.get("store")
 
-    @property
-    def is_loaded(self) -> bool:
-        """True if visualization has been downloaded and cached."""
-        return self._cached is not None
-
-    def load(self) -> "FigpackView":
-        """
-        Download and return the FigpackView. **Not yet implemented.**
-
-        figpack does not currently expose an API that reconstructs a
-        ``FigpackView`` from a stored ``data.zarr`` tree (``figpack.view_figure``
-        is a CLI helper that launches a local HTTP server and returns ``None``),
-        and the previous remote path relied on a ``StorageBackend.get_folder``
-        method that does not exist on DataJoint 2.3. Tracked in issue #3.
-
-        Raises
-        ------
-        NotImplementedError
-            Always. Use :meth:`serve_under` to materialize a servable viewer
-            bundle for browser display.
-        """
-        raise NotImplementedError(
-            "FigpackRef.load() is not yet implemented (see "
-            "https://github.com/datajoint/dj-figpack-codecs/issues/3). "
-            "Use ref.serve_under(base_dir) to materialize a servable viewer "
-            "bundle instead."
-        )
-
     def serve_under(self, base_dir) -> str:
-        """Materialize a servable viewer bundle under ``base_dir`` and return its URL.
+        """Publish the stored bundle under ``base_dir`` and return its URL.
 
-        Assembles ``base_dir/<id>/`` = figpack's viewer dist (shipped inside the
-        installed ``figpack`` package) + this ref's ``data.zarr`` (downloaded from the
-        store) + an empty extension manifest, then returns the leading-"/" relative URL
-        ``/<id>/index.html``. ``<id>`` is a stable hash of the ref's schema-addressed
-        OAS path — no I/O to compute, distinct primary keys map to distinct directories.
+        Downloads the stored object — the whole figpack bundle, viewer included — into
+        ``base_dir/<id>/`` and returns the leading-"/" relative URL ``/<id>/index.html``.
+        Nothing is assembled and ``figpack`` need not be installed. ``<id>`` is a stable
+        hash of the ref's schema-addressed OAS path — no I/O to compute, distinct primary keys map to distinct directories.
 
         Idempotent and concurrency-tolerant: if ``index.html`` already exists the build
         is skipped. The build is staged in a temp dir and published with ``os.replace``
@@ -148,8 +121,6 @@ class FigpackRef:
         This is the ``MaterializableRef`` seam consumed by dash-datajoint-components'
         ``PlotGrid`` (structural typing — no import of the dashboard package here).
         """
-        import figpack  # the viewer dist ships inside the figpack package
-
         base_dir = Path(base_dir)
         fig_id = hashlib.sha1(self.path.encode("utf-8")).hexdigest()[:16]
         dest = base_dir / fig_id
@@ -170,32 +141,32 @@ class FigpackRef:
 
             tmp = Path(tempfile.mkdtemp(dir=str(base_dir), prefix=f".{fig_id}-"))
             try:
-                # 1) figure data (schema-addressed zarr) from the store
-                zarr_dest = tmp / "data.zarr"
+                # The stored object is the whole bundle, so serving is a download.
+                # Nothing here knows figpack's internal layout: a custom view may name
+                # its Zarr folder differently or carry several, and an extension view
+                # brings JavaScript that exists only in the bundle.
                 full_path = self._backend._full_path(self.path)
                 if self._backend.protocol == "file":
-                    shutil.copytree(full_path, zarr_dest)
+                    shutil.copytree(full_path, tmp, dirs_exist_ok=True)
                 else:
-                    self._backend.fs.get(full_path, str(zarr_dest), recursive=True)
+                    # The trailing "/" makes fsspec copy the folder's contents into
+                    # tmp; without it, an existing dst gets the folder nested inside.
+                    self._backend.fs.get(full_path.rstrip("/") + "/", str(tmp), recursive=True)
 
-                # fsspec's recursive get lands contents *as* dst only when dst
-                # does not pre-exist (guaranteed here by the fresh mkdtemp) —
-                # fail loud if a backend/version ever nests them instead.
-                if not (zarr_dest / ".zmetadata").exists():
+                # Fail loud rather than publish a bundle with no entry point, which
+                # would serve as an unexplained 404.
+                if not (tmp / "index.html").exists():
+                    if (tmp / ".zmetadata").exists():
+                        raise DataJointError(
+                            f"figure {self.path!r} was stored by dj-figpack-codecs 0.2.x "
+                            f"as bare Zarr data, which cannot be served on its own; "
+                            f"re-insert the figure to store its full bundle"
+                        )
                     raise DataJointError(
-                        f"figure download produced an unexpected layout under "
-                        f"{zarr_dest} (no data.zarr/.zmetadata) — fsspec "
-                        f"recursive-get semantics may have changed for protocol "
-                        f"{self._backend.protocol!r}"
+                        f"figure download produced an unexpected layout under {tmp} "
+                        f"(no index.html) — fsspec recursive-get semantics may have "
+                        f"changed for protocol {self._backend.protocol!r}"
                     )
-
-                # 2) viewer dist (index.html + assets/) from the installed figpack
-                dist = Path(figpack.__file__).parent / "figpack-figure-dist"
-                shutil.copytree(dist, tmp, dirs_exist_ok=True)
-
-                # 3) bundles always carry an extension manifest; data-only storage has
-                #    no extensions (validate() rejects ExtensionView)
-                (tmp / "extension_manifest.json").write_text('{"extensions": []}')
 
                 try:
                     if dest.exists() and not index.exists():
@@ -219,31 +190,40 @@ class FigpackRef:
             pass  # concurrent rebuild swapped the dir this instant; next call repairs
         return f"/{fig_id}/index.html"
 
-    def show(self, **kwargs) -> None:
-        """
-        Download and display the visualization in browser. **Not yet
-        implemented** — depends on :meth:`load` (tracked in issue #3).
+    def show(self, *, open_browser: bool = True) -> str:
+        """Serve this figure over HTTP and return its URL.
+
+        A figpack viewer fetches its data with HTTP range requests, so opening
+        ``index.html`` from the filesystem does not work — the bundle has to be
+        served, by something that honours ``Range``. One server per process, on an
+        ephemeral port in a daemon thread, serves every figure shown; each figure is
+        published once under its own directory. It lives as long as the process,
+        which suits a notebook or a script.
 
         Parameters
         ----------
-        **kwargs
-            Additional arguments passed to FigpackView.show().
+        open_browser : bool, optional
+            Open the URL in the default browser. Default True.
 
-        Raises
-        ------
-        NotImplementedError
-            Always. Use :meth:`serve_under` to materialize a servable viewer
-            bundle for browser display.
+        Returns
+        -------
+        str
+            The figure's URL.
         """
-        view = self.load()
-        view.show(**kwargs)
+        import webbrowser
+
+        served, port = _show_server()
+        url = f"http://127.0.0.1:{port}{self.serve_under(served)}"
+        if open_browser:
+            webbrowser.open(url)
+        return url
 
     def _repr_html_(self) -> str:
         """
         HTML representation for Jupyter notebooks.
 
         Returns an informative HTML snippet showing metadata.
-        Loading the full visualization requires calling show() or load().
+        Displaying the figure requires calling show() or serve_under().
         """
         # title/description originate in user-controlled figure metadata —
         # escape before interpolating into notebook HTML.
@@ -253,22 +233,98 @@ class FigpackRef:
         desc_html = html.escape(
             self.description[:200] + "..." if len(self.description) > 200 else self.description
         )
-        status = "loaded" if self.is_loaded else "not loaded"
-
         return f"""
         <div style="border: 1px solid #ccc; padding: 10px; border-radius: 5px; max-width: 400px;">
             <div style="font-size: 14px; margin-bottom: 5px;">{title_html}</div>
             <div style="font-size: 12px; color: #666; margin-bottom: 8px;">{desc_html}</div>
             <div style="font-size: 11px; color: #999;">
-                FigpackRef ({status}) | <code>.show()</code> to display | <code>.load()</code> to get view
+                FigpackRef | <code>.show()</code> to display | <code>.serve_under()</code> to publish
             </div>
         </div>
         """
 
     def __repr__(self) -> str:
-        status = "loaded" if self.is_loaded else "not loaded"
         title_preview = f'"{self.title[:30]}..."' if len(self.title) > 30 else f'"{self.title}"'
-        return f"FigpackRef(title={title_preview}, {status})"
+        return f"FigpackRef(title={title_preview})"
 
     def __str__(self) -> str:
         return repr(self)
+
+
+_show_lock = threading.Lock()
+_show_state: tuple[Path, int] | None = None
+
+
+def _show_server() -> tuple[Path, int]:
+    """Return the process-wide (served directory, port), starting the server once."""
+    global _show_state
+    with _show_lock:
+        if _show_state is None:
+            served = Path(tempfile.mkdtemp(prefix="figpack-show-"))
+            atexit.register(shutil.rmtree, served, True)
+            handler = functools.partial(_RangeRequestHandler, directory=str(served))
+            httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            _show_state = (served, httpd.server_address[1])
+        return _show_state
+
+
+class _RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
+    """Static file handler that honours ``Range``.
+
+    figpack packs many small chunks into large consolidated files and the viewer
+    ranges into them, so a handler that ignores ``Range`` makes a browser pull whole
+    files — which is the difference between a few kilobytes and a gigabyte. Python's
+    stock handler has no range support, so it is added here rather than by importing
+    figpack's, which would put the dependency back.
+    """
+
+    def end_headers(self):
+        self.send_header("Accept-Ranges", "bytes")
+        super().end_headers()
+
+    def log_message(self, *args):
+        pass  # a figure viewer issues hundreds of requests; do not narrate them
+
+    def do_GET(self):  # noqa: N802 — http.server's casing
+        header = self.headers.get("Range")
+        if not header:
+            return super().do_GET()
+
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", header.strip())
+        if not match:
+            return super().do_GET()  # multipart/unsatisfiable syntax: serve whole
+
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            return super().do_GET()
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            self.send_error(404)
+            return
+
+        first, last = match.group(1), match.group(2)
+        if first == "":
+            if last == "":
+                return super().do_GET()
+            length = min(int(last), size)
+            start, end = size - length, size - 1
+        else:
+            start = int(first)
+            end = min(int(last), size - 1) if last else size - 1
+
+        if start >= size or start > end:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.end_headers()
+            return
+
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        with open(path, "rb") as f:
+            f.seek(start)
+            self.wfile.write(f.read(end - start + 1))
