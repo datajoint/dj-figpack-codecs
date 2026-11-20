@@ -88,10 +88,12 @@ def sample_metadata():
 
 @pytest.fixture
 def sample_context():
-    """Sample context dict as passed to encode."""
+    """The codec context, as DataJoint 2.3.4 and later pass it to encode and decode."""
+    import datajoint as dj
+
     return {
-        "_schema": "test_schema",
-        "_table": "test_table",
-        "_field": "visualization",
-        "id": 1,
+        "schema": "test_schema",
+        "table": "test_table",
+        "field": "visualization",
+        "config": dj.config,
     }

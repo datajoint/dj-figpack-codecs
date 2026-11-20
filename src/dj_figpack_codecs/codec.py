@@ -22,6 +22,28 @@ if TYPE_CHECKING:
     from figpack import FigpackView
 
 
+def _require_context(context: dict | None, *names: str) -> dict:
+    """
+    Return ``context``, checked to carry ``names``.
+
+    DataJoint 2.3.4 and later pass ``context`` to every codec that declares it:
+    ``schema``, ``table``, ``field``, and ``config`` on insert, ``config`` on
+    fetch. The codec reads them there only, never from underscore keys in ``key``.
+    """
+    missing = [n for n in names if context is None or context.get(n) is None]
+    if context is None or missing:
+        raise DataJointError(
+            "<figpack> needs the context that DataJoint 2.3.4 and later pass to codecs "
+            f"(missing: {', '.join(missing)}); install datajoint>=2.3.4"
+        )
+    return context
+
+
+def _primary_key(key: dict | None) -> dict:
+    """The primary key values in ``key``, without the underscore keys DataJoint 2.3 adds."""
+    return {k: v for k, v in (key or {}).items() if not k.startswith("_")}
+
+
 class FigpackCodec(SchemaCodec):
     """
     Schema-addressed storage for figpack visualizations as self-contained bundles.
@@ -136,9 +158,9 @@ class FigpackCodec(SchemaCodec):
             The figpack visualization to store.
         key : dict, optional
             Primary key values for path construction.
-        context : dict, optional
-            ``schema``, ``table``, ``field`` and ``config`` of the calling
-            connection (DataJoint >= 2.3.4).
+        context : dict
+            ``schema``, ``table``, ``field`` and ``config`` of the insert, as
+            DataJoint 2.3.4 and later pass them.
         store_name : str, optional
             Target store. If None, uses default store.
 
@@ -146,23 +168,27 @@ class FigpackCodec(SchemaCodec):
         -------
         dict
             JSON metadata: ``{path, store, title, description}``.
+
+        Raises
+        ------
+        DataJointError
+            If ``context`` lacks the ``schema``, ``table``, ``field``, or
+            ``config`` that DataJoint 2.3.4 and later pass.
         """
         import tempfile
         from pathlib import Path
 
-        schema, table, field, primary_key = self._extract_context(key, context)
-
-        # The connection's own config. Both helpers below fall back to global
-        # dj.config when this is None, which in a process serving many users is
-        # someone else's store — or, on a pod with no ambient credentials, none.
-        config = self._codec_config(key, context)
+        context = _require_context(context, "schema", "table", "field", "config")
+        # The inserting connection's own config, never global dj.config: in a
+        # process serving many users, the global config is someone else's store.
+        config = context["config"]
 
         # The object is a figpack bundle folder, not a Zarr store.
         path, _token = self._build_path(
-            schema,
-            table,
-            field,
-            primary_key,
+            context["schema"],
+            context["table"],
+            context["field"],
+            _primary_key(key),
             ext=".figpack",
             store_name=store_name,
             config=config,
@@ -207,15 +233,21 @@ class FigpackCodec(SchemaCodec):
             JSON metadata from database.
         key : dict, optional
             Primary key values (unused).
-        context : dict, optional
-            Carries ``config``, the connection's config with that user's store
-            credentials (DataJoint >= 2.3.4).
+        context : dict
+            Carries ``config``, the fetching connection's config with that
+            user's store credentials, as DataJoint 2.3.4 and later pass it.
 
         Returns
         -------
         FigpackRef
             Lazy reference with metadata access and display methods.
+
+        Raises
+        ------
+        DataJointError
+            If ``context`` lacks the ``config`` that DataJoint 2.3.4 and later pass.
         """
-        config = self._codec_config(key, context)
+        del key  # the stored metadata locates the bundle
+        config = _require_context(context, "config")["config"]
         backend = self._get_backend(stored.get("store"), config=config)
         return FigpackRef(stored, backend)

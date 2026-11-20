@@ -16,8 +16,10 @@ def stored_ref(sample_figpack_view, sample_context, mock_backend, default_store_
 
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
-    metadata = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
-    return codec.decode(metadata)
+    metadata = codec.encode(
+        sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+    )
+    return codec.decode(metadata, context=sample_context)
 
 
 def test_serve_under_publishes_the_stored_bundle(stored_ref, tmp_path):
@@ -132,8 +134,10 @@ def test_real_file_backend_roundtrip_without_db(
     from dj_figpack_codecs import FigpackCodec, FigpackRef
 
     codec = FigpackCodec()  # _get_backend NOT mocked
-    metadata = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
-    ref = codec.decode(metadata)
+    metadata = codec.encode(
+        sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+    )
+    ref = codec.decode(metadata, context=sample_context)
     assert isinstance(ref, FigpackRef)
 
     serve = tmp_path / "serve"
