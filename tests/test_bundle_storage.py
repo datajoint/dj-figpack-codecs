@@ -30,7 +30,9 @@ def test_encode_stores_the_whole_bundle(
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
 
-    meta = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
+    meta = codec.encode(
+        sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+    )
 
     stored = temp_store / meta["path"]
     assert (stored / "index.html").exists()
@@ -61,7 +63,10 @@ def test_extension_javascript_survives_the_round_trip(
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
 
     meta = codec.encode(
-        _extension_view("// SENTINEL-EXT-JS"), key=sample_context, store_name="default"
+        _extension_view("// SENTINEL-EXT-JS"),
+        key={"id": 1},
+        context=sample_context,
+        store_name="default",
     )
 
     stored = temp_store / meta["path"]
@@ -89,12 +94,14 @@ def test_serve_under_serves_the_stored_bundle_verbatim(
 
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
-    meta = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
+    meta = codec.encode(
+        sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+    )
 
     stored = temp_store / meta["path"]
     (stored / "index.html").write_text("<!-- SENTINEL-FROM-STORE -->")
 
-    ref = codec.decode(meta)
+    ref = codec.decode(meta, context=sample_context)
     url = ref.serve_under(tmp_path)
 
     fig_id = hashlib.sha1(ref.path.encode("utf-8")).hexdigest()[:16]
@@ -116,7 +123,12 @@ def test_serve_under_does_not_import_figpack(
 
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
-    ref = codec.decode(codec.encode(sample_figpack_view, key=sample_context, store_name="default"))
+    ref = codec.decode(
+        codec.encode(
+            sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+        ),
+        context=sample_context,
+    )
 
     import builtins
 
@@ -142,7 +154,12 @@ def test_show_serves_the_bundle_over_http(
 
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
-    ref = codec.decode(codec.encode(sample_figpack_view, key=sample_context, store_name="default"))
+    ref = codec.decode(
+        codec.encode(
+            sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+        ),
+        context=sample_context,
+    )
 
     url = ref.show(open_browser=False)
 
@@ -172,7 +189,12 @@ def test_show_honours_range_requests(
 
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
-    ref = codec.decode(codec.encode(sample_figpack_view, key=sample_context, store_name="default"))
+    ref = codec.decode(
+        codec.encode(
+            sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+        ),
+        context=sample_context,
+    )
 
     url = ref.show(open_browser=False)
 
@@ -214,7 +236,12 @@ def test_show_reuses_one_server_per_process(
 
     codec = FigpackCodec()
     mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
-    ref = codec.decode(codec.encode(sample_figpack_view, key=sample_context, store_name="default"))
+    ref = codec.decode(
+        codec.encode(
+            sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+        ),
+        context=sample_context,
+    )
 
     first = ref.show(open_browser=False)
     threads_after_first = threading.active_count()

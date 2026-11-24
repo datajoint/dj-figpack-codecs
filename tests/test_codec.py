@@ -158,7 +158,8 @@ class TestFigpackCodec:
 
         metadata = codec.encode(
             sample_figpack_view,
-            key=sample_context,
+            key={"id": 1},
+            context=sample_context,
             store_name="default",
         )
 
@@ -182,7 +183,7 @@ class TestFigpackCodec:
         mocker,
     ):
         """encode() uploads the whole bundle, and the consolidated zarr metadata
-        inside it carries the title."""
+        inside it carries the title and description."""
         import json
 
         from dj_figpack_codecs import FigpackCodec
@@ -190,14 +191,20 @@ class TestFigpackCodec:
         codec = FigpackCodec()
         mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
 
-        metadata = codec.encode(sample_figpack_view, key=sample_context, store_name="default")
+        metadata = codec.encode(
+            sample_figpack_view, key={"id": 1}, context=sample_context, store_name="default"
+        )
 
         stored = temp_store / metadata["path"]
         assert (stored / "index.html").exists()  # the viewer travels with the figure
         assert (stored / "data.zarr" / ".zmetadata").exists()  # consolidated zarr metadata
         zmeta = json.loads((stored / "data.zarr" / ".zmetadata").read_text())
-        assert zmeta["metadata"][".zattrs"]["title"] == "Test Visualization"
-        assert zmeta["metadata"][".zattrs"]["description"] == "A test plot"
+        zattrs = zmeta["metadata"][".zattrs"]
+        # figpack 0.4 writes the figure title as "figure_title", so that it no longer
+        # overwrites the root view's own "title"; figpack 0.3 wrote it as "title".
+        # The viewer reads figure_title first, then title.
+        assert zattrs.get("figure_title", zattrs.get("title")) == "Test Visualization"
+        assert zattrs["description"] == "A test plot"
 
     def test_encode_titleless_view_stores_empty_title(
         self, sample_context, mock_backend, default_store_config, mocker
@@ -218,11 +225,13 @@ class TestFigpackCodec:
         codec = FigpackCodec()
         mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
 
-        metadata = codec.encode(view, key=sample_context, store_name="default")
+        metadata = codec.encode(view, key={"id": 1}, context=sample_context, store_name="default")
         assert metadata["title"] == ""
         assert metadata["description"] == ""
 
-    def test_decode_returns_figpack_ref(self, sample_metadata, mock_backend, mocker):
+    def test_decode_returns_figpack_ref(
+        self, sample_metadata, sample_context, mock_backend, mocker
+    ):
         """Test that decode returns FigpackRef."""
         from dj_figpack_codecs import FigpackCodec, FigpackRef
 
@@ -231,7 +240,7 @@ class TestFigpackCodec:
         # Mock the backend retrieval
         mocker.patch.object(codec, "_get_backend", return_value=mock_backend)
 
-        ref = codec.decode(sample_metadata)
+        ref = codec.decode(sample_metadata, context=sample_context)
 
         assert isinstance(ref, FigpackRef)
         assert ref.title == sample_metadata["title"]
